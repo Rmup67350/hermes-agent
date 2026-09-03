@@ -244,6 +244,64 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
         assert payload["host_local"] is True
 
 
+def test_worker_pid_is_persisted_with_start_identity(kanban_home):
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    try:
+        with kb.connect() as conn:
+            task_id = kb.create_task(conn, title="identity", assignee="worker")
+            kb.claim_task(conn, task_id)
+            kb._set_worker_pid(conn, task_id, proc.pid)
+            row = conn.execute(
+                "SELECT worker_pid, worker_start_time FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            assert row["worker_pid"] == proc.pid
+            assert row["worker_start_time"] == kb._worker_process_start_time(proc.pid)
+            assert row["worker_start_time"]
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def test_recycled_worker_pid_is_never_signalled(kanban_home):
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    signalled = []
+    try:
+        host_lock = f"{kb._claimer_id().split(':', 1)[0]}:worker"
+        result = kb._terminate_reclaimed_worker(
+            proc.pid,
+            host_lock,
+            signal_fn=lambda pid, sig: signalled.append((pid, sig)),
+            process_start_time="Mon Jan  1 00:00:00 1990",
+        )
+        assert signalled == []
+        assert result["identity_mismatch"] is True
+        assert proc.poll() is None
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def test_live_worker_without_start_identity_is_quarantined(kanban_home):
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    signalled = []
+    try:
+        host_lock = f"{kb._claimer_id().split(':', 1)[0]}:worker"
+        result = kb._terminate_reclaimed_worker(
+            proc.pid,
+            host_lock,
+            signal_fn=lambda pid, sig: signalled.append((pid, sig)),
+            process_start_time=None,
+        )
+        assert signalled == []
+        assert result["identity_unproven"] is True
+        assert kb._worker_survived_termination(result) is True
+        assert proc.poll() is None
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
 
 
 

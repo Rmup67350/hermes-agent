@@ -1359,6 +1359,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- exceeds DEFAULT_FAILURE_LIMIT consecutive non-successes.
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     worker_pid           INTEGER,
+    worker_start_time    TEXT,
     -- Short excerpt of the most recent failure's error text.
     last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
@@ -1465,6 +1466,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     claim_lock          TEXT,
     claim_expires       INTEGER,
     worker_pid          INTEGER,
+    worker_start_time   TEXT,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
     started_at          INTEGER NOT NULL,
@@ -2593,6 +2595,17 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             )
     if "worker_pid" not in cols:
         _add_column_if_missing(conn, "tasks", "worker_pid", "worker_pid INTEGER")
+    if "worker_start_time" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "worker_start_time", "worker_start_time TEXT"
+        )
+    run_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")
+    }
+    if run_cols and "worker_start_time" not in run_cols:
+        _add_column_if_missing(
+            conn, "task_runs", "worker_start_time", "worker_start_time TEXT"
+        )
     if "last_failure_error" not in cols:
         added = _add_column_if_missing(
             conn, "tasks", "last_failure_error", "last_failure_error TEXT"
@@ -4681,7 +4694,7 @@ def claim_task(
                    SET status = 'reclaimed', outcome = 'reclaimed',
                        summary = COALESCE(summary, 'invariant recovery on re-claim'),
                        ended_at = ?,
-                       claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
+                       claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_start_time = NULL
                  WHERE id = ? AND ended_at IS NULL
                 """,
                 (now, int(stale["current_run_id"])),
@@ -4989,7 +5002,7 @@ def release_stale_claims(
     reclaimed = 0
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at, "
+        "SELECT id, claim_lock, worker_pid, worker_start_time, claim_expires, last_heartbeat_at, "
         "       assignee "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
@@ -5011,7 +5024,9 @@ def release_stale_claims(
         if (
             host_local
             and row["worker_pid"]
-            and _pid_alive(row["worker_pid"])
+            and _worker_identity_state(
+                int(row["worker_pid"]), row["worker_start_time"] or ""
+            ) == "alive"
             and not heartbeat_stale
         ):
             new_expires = now + _resolve_claim_ttl_seconds()
@@ -5052,6 +5067,7 @@ def release_stale_claims(
 
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+            process_start_time=row["worker_start_time"],
         )
         # Never release a claim while our own worker is still alive: that would
         # spawn a duplicate beside it. Hold the claim and retry next tick.
@@ -5065,7 +5081,7 @@ def release_stale_claims(
             retry_status = _retry_status_for_run(conn, row["id"])
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
+                "claim_expires = NULL, worker_pid = NULL, worker_start_time = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ?",
                 (retry_status, row["id"], row["claim_lock"], now),
@@ -5141,7 +5157,7 @@ def reclaim_task(
     reclaimable state (not running, or doesn't exist).
     """
     row = conn.execute(
-        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+        "SELECT status, claim_lock, worker_pid, worker_start_time FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if not row:
@@ -5152,12 +5168,13 @@ def reclaim_task(
     prev_lock = row["claim_lock"]
     termination = _terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
+        process_start_time=row["worker_start_time"],
     )
     with write_txn(conn):
         retry_status = _retry_status_for_run(conn, task_id)
         cur = conn.execute(
             "UPDATE tasks SET status = ?, claim_lock = NULL, "
-            "claim_expires = NULL, worker_pid = NULL "
+            "claim_expires = NULL, worker_pid = NULL, worker_start_time = NULL "
             "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
             "AND claim_lock IS ?",
             (retry_status, task_id, prev_lock),
@@ -6750,7 +6767,7 @@ def request_changes(
                    assignee = COALESCE(?, assignee),
                    claim_lock = NULL,
                    claim_expires = NULL,
-                   worker_pid = NULL
+                   worker_pid = NULL, worker_start_time = NULL
              WHERE id = ? AND status = 'running' AND current_run_id = ?
             """,
             (new_status, implementer, task_id, int(current_run_id)),
@@ -6870,7 +6887,7 @@ def _reclaim_dangling_run(
                SET status = 'reclaimed', outcome = 'reclaimed',
                    summary = COALESCE(summary, ?),
                    ended_at = ?,
-                   claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
+                   claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_start_time = NULL
              WHERE id = ? AND ended_at IS NULL
             """,
             (note, now, int(stale["current_run_id"])),
@@ -7005,7 +7022,7 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_start_time = NULL "
             # consecutive_failures deliberately PRESERVED: review reopen is
             # not a success signal; only complete_task resets the breaker
             # counter (mirrors unblock_task, #35072).
@@ -7084,14 +7101,19 @@ def invalidate_descendants_for_parent_reopen(
     streak, while an operator invalidating a subtree is an explicit reset
     signal.
 
-    Returns ``{"invalidated": [...], "terminations": [...]}`` where each
-    invalidated entry is ``{id, prior_status, new_status, resume_status}``
-    and each termination is a ``(worker_pid, claim_lock)`` tuple.
+    Returns ``{"invalidated": [...], "terminations": [...],
+    "termination_identities": [...]}`` where each invalidated entry is
+    ``{id, prior_status, new_status, resume_status}``. ``terminations`` keeps
+    its public ``(worker_pid, claim_lock)`` compatibility shape while
+    ``termination_identities`` carries the start-time guard needed by callers
+    that perform the post-commit signal themselves.
     """
     caller_owns_txn = bool(getattr(conn, "in_transaction", False))
     now = int(time.time())
     invalidated: list[dict[str, Any]] = []
-    terminations: list[tuple[Optional[int], Optional[str]]] = []
+    terminations: list[
+        tuple[Optional[int], Optional[str], Optional[str]]
+    ] = []
     with write_txn(conn, allow_nested=True):
         rows = conn.execute(
             """
@@ -7102,7 +7124,8 @@ def invalidate_descendants_for_parent_reopen(
                 FROM task_links l
                 JOIN descendants d ON d.id = l.parent_id
             )
-            SELECT t.id, t.status, t.current_run_id, t.worker_pid, t.claim_lock
+            SELECT t.id, t.status, t.current_run_id, t.worker_pid,
+                   t.worker_start_time, t.claim_lock
             FROM descendants d
             JOIN tasks t ON t.id = d.id
             ORDER BY t.id
@@ -7121,7 +7144,9 @@ def invalidate_descendants_for_parent_reopen(
                 resume_status = _retry_status_for_run(
                     conn, row["id"], row["current_run_id"]
                 )
-                terminations.append((row["worker_pid"], row["claim_lock"]))
+                terminations.append(
+                    (row["worker_pid"], row["claim_lock"], row["worker_start_time"])
+                )
                 run_id = _end_run(
                     conn,
                     row["id"],
@@ -7133,7 +7158,7 @@ def invalidate_descendants_for_parent_reopen(
             # docstring for why this diverges from reopen_review_task.
             conn.execute(
                 "UPDATE tasks SET status = 'todo', completed_at = NULL, "
-                "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+                "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_start_time = NULL, "
                 "current_run_id = NULL, consecutive_failures = 0 WHERE id = ?",
                 (row["id"],),
             )
@@ -7192,9 +7217,15 @@ def invalidate_descendants_for_parent_reopen(
         # Standalone call: we committed above, so the audit trail is durable
         # — safe to kill workers now. Composed calls leave this to the
         # caller (post-commit), preserving events-before-termination.
-        for pid, claim_lock in terminations:
-            _terminate_reclaimed_worker(pid, claim_lock)
-    return {"invalidated": invalidated, "terminations": terminations}
+        for pid, claim_lock, process_start_time in terminations:
+            _terminate_reclaimed_worker(
+                pid, claim_lock, process_start_time=process_start_time
+            )
+    return {
+        "invalidated": invalidated,
+        "terminations": [(pid, lock) for pid, lock, _start in terminations],
+        "termination_identities": terminations,
+    }
 
 
 def specify_triage_task(
@@ -7525,7 +7556,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
-            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_start_time = NULL "
             "WHERE id = ? AND status != 'archived'",
             (task_id,),
         )
@@ -8261,13 +8292,43 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
+def _worker_process_start_time(pid: int) -> str:
+    """Return the exact process creation timestamp used for PID identity."""
+    try:
+        import psutil
+
+        return f"{float(psutil.Process(int(pid)).create_time()):.6f}"
+    except Exception as exc:
+        raise RuntimeError("worker process start time could not be proven") from exc
+
+
+def _worker_identity_state(pid: int, process_start_time: str) -> str:
+    """Return alive, dead, or unknown for a PID/start-time pair."""
+    try:
+        expected = float(process_start_time)
+    except (TypeError, ValueError):
+        return "unknown"
+    try:
+        from hermes_cli.process_identity import _pid_alive_matches
+
+        matches = _pid_alive_matches(int(pid), expected)
+    except Exception:
+        return "unknown"
+    if matches is True:
+        return "alive"
+    if matches is False:
+        return "dead"
+    return "unknown"
+
+
 def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
     *,
     signal_fn=None,
+    process_start_time: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Terminate only a host-local worker whose exact identity is proven."""
     import signal
 
     info: dict[str, Any] = {
@@ -8284,6 +8345,21 @@ def _terminate_reclaimed_worker(
     if not str(claim_lock).startswith(host_prefix):
         return info
     info["host_local"] = True
+
+    if not isinstance(process_start_time, str) or not process_start_time.strip():
+        info["identity_unproven"] = True
+        if not _pid_alive(int(pid)):
+            info["terminated"] = True
+        return info
+    identity_state = _worker_identity_state(int(pid), process_start_time)
+    if identity_state == "unknown":
+        info["identity_unknown"] = True
+        info["identity_mismatch"] = True
+        return info
+    if identity_state == "dead":
+        info["identity_mismatch"] = True
+        info["terminated"] = True
+        return info
 
     kill = signal_fn if signal_fn is not None else (
         os.kill if hasattr(os, "kill") else None
@@ -8304,12 +8380,17 @@ def _terminate_reclaimed_worker(
         return info
 
     for _ in range(10):
-        if not _pid_alive(pid):
+        identity_state = _worker_identity_state(int(pid), process_start_time)
+        if identity_state == "dead":
             info["terminated"] = True
+            return info
+        if identity_state == "unknown":
+            info["identity_unknown"] = True
             return info
         time.sleep(0.5)
 
-    if _pid_alive(pid):
+    identity_state = _worker_identity_state(int(pid), process_start_time)
+    if identity_state == "alive":
         try:
             # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
             # (which maps to TerminateProcess via the stdlib shim).
@@ -8319,7 +8400,11 @@ def _terminate_reclaimed_worker(
         except (ProcessLookupError, OSError):
             return info
 
-    info["terminated"] = not _pid_alive(pid)
+    final_state = _worker_identity_state(int(pid), process_start_time)
+    if final_state == "unknown":
+        info["identity_unknown"] = True
+        return info
+    info["terminated"] = final_state == "dead"
     return info
 
 
@@ -8332,6 +8417,12 @@ def _worker_survived_termination(termination: dict) -> bool:
     claim lock or a no-op attempt (no ``os.kill`` available) must fall through
     to the normal release path, since we cannot manage that worker anyway.
     """
+    if (
+        (termination.get("identity_unproven") or termination.get("identity_unknown"))
+        and termination.get("host_local")
+        and not termination.get("terminated")
+    ):
+        return True
     return bool(
         termination.get("termination_attempted")
         and termination.get("host_local")
@@ -8506,7 +8597,7 @@ def enforce_max_runtime(
             retry_status = _retry_status_for_run(conn, tid)
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, worker_start_time = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
@@ -8594,7 +8685,7 @@ def detect_stale_running(
     reclaimed: list[str] = []
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
+        "SELECT t.id, t.worker_pid, t.worker_start_time, t.last_heartbeat_at, t.claim_lock, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -8622,6 +8713,7 @@ def detect_stale_running(
         # Terminate the worker if it's still host-local.
         termination = _terminate_reclaimed_worker(
             pid, lock, signal_fn=signal_fn,
+            process_start_time=row["worker_start_time"],
         )
 
         # Never release a claim while our own worker is still alive: that would
@@ -8637,7 +8729,7 @@ def detect_stale_running(
             retry_status = _retry_status_for_run(conn, tid)
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, worker_start_time = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ?",
@@ -8733,7 +8825,7 @@ def reconcile_orphaned_running(
         with write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, worker_start_time = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ? AND claim_expires IS ?",
@@ -8992,7 +9084,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             event_payload["retry_status"] = retry_status
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
+                "claim_expires = NULL, worker_pid = NULL, worker_start_time = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
                 (retry_status, row["id"], pid, row["claim_lock"]),
@@ -9250,7 +9342,7 @@ def _record_task_failure(
                 # Spawn path: still running, also clear claim state.
                 conn.execute(
                     "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
-                    "claim_expires = NULL, worker_pid = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, worker_start_time = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('running', 'ready', 'review')",
                     (failures, error[:500], task_id),
@@ -9300,7 +9392,7 @@ def _record_task_failure(
                 # Spawn path: restore the claimed source phase + clear claim.
                 conn.execute(
                     "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                    "claim_expires = NULL, worker_pid = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, worker_start_time = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status = 'running'",
                     (retry_status, failures, error[:500], task_id),
@@ -9361,16 +9453,23 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
     tail`` can correlate log lines with OS-level traces without opening
     the drawer.
     """
+    try:
+        start_time: Optional[str] = _worker_process_start_time(int(pid))
+    except RuntimeError:
+        # Legacy callers can attach an already-exited PID. Persisting the PID
+        # is still useful for diagnostics, but an absent identity must remain
+        # fail-closed on every termination path.
+        start_time = None
     with write_txn(conn):
         conn.execute(
-            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
-            (int(pid), task_id),
+            "UPDATE tasks SET worker_pid = ?, worker_start_time = ? WHERE id = ?",
+            (int(pid), start_time, task_id),
         )
         run_id = _current_run_id(conn, task_id)
         if run_id is not None:
             conn.execute(
-                "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
-                (int(pid), run_id),
+                "UPDATE task_runs SET worker_pid = ?, worker_start_time = ? WHERE id = ?",
+                (int(pid), start_time, run_id),
             )
         _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
 

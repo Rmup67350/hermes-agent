@@ -1099,7 +1099,9 @@ def _parents_blocking_ready(
 def _invalidate_descendants_for_parent_reopen(
     conn: sqlite3.Connection,
     parent_id: str,
-    terminations: list[tuple[Optional[int], Optional[str]]],
+    terminations: list[
+        tuple[Optional[int], Optional[str], Optional[str]]
+    ],
 ) -> None:
     """Delegate to the domain-layer implementation in :mod:`kanban_db`.
 
@@ -1115,7 +1117,7 @@ def _invalidate_descendants_for_parent_reopen(
     result = kanban_db.invalidate_descendants_for_parent_reopen(
         conn, parent_id, author="dashboard",
     )
-    terminations.extend(result["terminations"])
+    terminations.extend(result["termination_identities"])
 
 
 def _set_status_direct(
@@ -1131,12 +1133,14 @@ def _set_status_direct(
     orphaned. ``running -> ready`` via drag-drop is the common case
     (user yanking a stuck worker back to the queue).
     """
-    terminations: list[tuple[Optional[int], Optional[str]]] = []
+    terminations: list[
+        tuple[Optional[int], Optional[str], Optional[str]]
+    ] = []
     effective_status = new_status
     with kanban_db.write_txn(conn):
         # Snapshot current state so we know whether to close a run.
         prev = conn.execute(
-            "SELECT status, current_run_id, worker_pid, claim_lock "
+            "SELECT status, current_run_id, worker_pid, worker_start_time, claim_lock "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -1179,9 +1183,11 @@ def _set_status_direct(
             "UPDATE tasks SET status = ?, "
             "  claim_lock = CASE WHEN ? = 'running' THEN claim_lock ELSE NULL END, "
             "  claim_expires = CASE WHEN ? = 'running' THEN claim_expires ELSE NULL END, "
-            "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END "
+            "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END, "
+            "  worker_start_time = CASE WHEN ? = 'running' THEN worker_start_time ELSE NULL END "
             "WHERE id = ?",
             (
+                effective_status,
                 effective_status,
                 effective_status,
                 effective_status,
@@ -1198,7 +1204,9 @@ def _set_status_direct(
                 outcome="reclaimed", status="reclaimed",
                 summary=f"status changed to {effective_status} (dashboard/direct)",
             )
-            terminations.append((prev["worker_pid"], prev["claim_lock"]))
+            terminations.append(
+                (prev["worker_pid"], prev["claim_lock"], prev["worker_start_time"])
+            )
         conn.execute(
             "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
             "VALUES (?, ?, 'status', ?, ?)",
@@ -1220,8 +1228,10 @@ def _set_status_direct(
                 task_id,
                 terminations,
             )
-    for pid, claim_lock in terminations:
-        kanban_db._terminate_reclaimed_worker(pid, claim_lock)
+    for pid, claim_lock, process_start_time in terminations:
+        kanban_db._terminate_reclaimed_worker(
+            pid, claim_lock, process_start_time=process_start_time
+        )
     # If we re-opened something, children may have gone stale.
     if effective_status in {"done", "ready", "review"}:
         kanban_db.recompute_ready(conn)
