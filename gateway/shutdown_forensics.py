@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -199,6 +200,20 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     return ctx
 
 
+def _bounded_shell_argv(script: str, timeout_seconds: float) -> List[str]:
+    """Run ``script`` under a hard budget with or without GNU timeout."""
+    budget = f"{timeout_seconds:.0f}"
+    timeout_bin = shutil.which("timeout") or shutil.which("gtimeout")
+    if timeout_bin:
+        return [timeout_bin, budget, "bash", "-c", script]
+    guarded = (
+        f"( sleep {budget}; kill -TERM $$ ) 2>/dev/null & __hermes_killer=$!; "
+        f"{{ {script}; }}; "
+        "kill $__hermes_killer 2>/dev/null || true"
+    )
+    return ["bash", "-c", guarded]
+
+
 def spawn_async_diagnostic(
     log_path: Path,
     signal_name: str,
@@ -260,7 +275,7 @@ def spawn_async_diagnostic(
         # start_new_session, a SIGKILL on our cgroup takes the diag down
         # before it can flush.
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
+            _bounded_shell_argv(script, timeout_seconds),
             stdout=fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

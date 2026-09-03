@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import sys
 import time
@@ -89,6 +90,16 @@ class TestFormatters:
 # ---------------------------------------------------------------------------
 
 class TestSpawnAsyncDiagnostic:
+    def test_shell_fallback_is_bounded_without_coreutils_timeout(self, monkeypatch):
+        monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+        argv = sf._bounded_shell_argv("echo diagnostic", 3.0)
+
+        assert argv[:2] == ["bash", "-c"]
+        assert "sleep 3" in argv[2]
+        assert "kill -TERM $$" in argv[2]
+        assert "echo diagnostic" in argv[2]
+
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
     def test_spawns_subprocess_and_writes_output(self, tmp_path):
         log_path = tmp_path / "diag.log"
