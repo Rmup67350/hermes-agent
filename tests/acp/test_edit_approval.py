@@ -95,6 +95,37 @@ def test_patch_replace_rejection_does_not_mutate(tmp_path):
 
 
 
+def test_patch_v4a_approval_request_includes_patch_targets(tmp_path, monkeypatch):
+    target = tmp_path / "sample.txt"
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    proposals = []
+
+    set_edit_approval_requester(lambda proposal: proposals.append(proposal) or False)
+
+    json.loads(
+        handle_function_call(
+            "patch",
+            {
+                "mode": "patch",
+                "patch": (
+                    "*** Begin Patch\n"
+                    "*** Update File: sample.txt\n"
+                    "@@\n"
+                    " alpha\n"
+                    "-beta\n"
+                    "+gamma\n"
+                    "*** End Patch\n"
+                ),
+            },
+            task_id="acp-patch-v4a-proposal",
+        )
+    )
+
+    assert len(proposals) == 1
+    assert proposals[0].tool_name == "patch"
+    assert proposals[0].path == "sample.txt"
+    assert "*** Update File: sample.txt" in proposals[0].new_text
 
 
 

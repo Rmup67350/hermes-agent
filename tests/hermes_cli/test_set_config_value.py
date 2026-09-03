@@ -148,6 +148,52 @@ class TestConfigYamlRouting:
         env_content = _read_env(_isolated_hermes_home)
         assert "vercel_runtime: python3.13" in config
         assert "TERMINAL_VERCEL_RUNTIME=python3.13" in env_content
+    def test_terminal_workspace_bootstrap_json_goes_to_config_and_env(self, _isolated_hermes_home):
+        import json
+
+        spec = {
+            "registry": "/registry",
+            "policy": "/policy.json",
+            "profile": "code-a",
+            "agent": "code-a",
+            "key": "HER-96",
+            "lane_sha256": "a" * 64,
+        }
+
+        set_config_value("terminal.workspace_bootstrap", json.dumps(spec))
+
+        config = _read_config(_isolated_hermes_home)
+        env_content = _read_env(_isolated_hermes_home)
+        assert "workspace_bootstrap:" in config
+        assert "registry: /registry" in config
+        assert "TERMINAL_WORKSPACE_BOOTSTRAP=" in env_content
+        env_value = next(
+            line.partition("=")[2]
+            for line in env_content.splitlines()
+            if line.startswith("TERMINAL_WORKSPACE_BOOTSTRAP=")
+        )
+        # save_env_value shell-quotes structured strings in the dotenv file;
+        # the dotenv loader removes the outer layer before terminal_tool sees it.
+        assert json.loads(json.loads(env_value)) == spec
+
+    def test_terminal_workspace_bootstrap_config_set_rejects_unknown_fields(
+        self, _isolated_hermes_home
+    ):
+        import json
+        from tools.workspace_bootstrap import WorkspaceBootstrapError
+
+        invalid = {
+            "registry": "/registry",
+            "policy": "/policy.json",
+            "profile": "code-a",
+            "agent": "code-a",
+            "key": "HER-96",
+            "lane_sha256": "a" * 64,
+            "command": "untrusted",
+        }
+
+        with pytest.raises(WorkspaceBootstrapError, match="required trusted fields"):
+            set_config_value("terminal.workspace_bootstrap", json.dumps(invalid))
 
 
 # ---------------------------------------------------------------------------

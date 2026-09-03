@@ -497,6 +497,11 @@ DEFAULT_CONFIG = {
         # Explicit opt-in: mount the host cwd into /workspace for Docker sessions.
         # Default off because passing host directories into a sandbox weakens isolation.
         "docker_mount_cwd_to_workspace": False,
+        # Fail-closed code mode: exact Git worktree is the sole writable host
+        # mount; Git metadata is read-only and network/credentials are disabled.
+        "docker_workspace_only": False,
+        # Trusted host-side command policy for dynamic workspace-only Docker sessions.
+        "workspace_bootstrap": {},
         # Opt-in egress lockdown for Docker terminal sessions. When false,
         # Docker runs with --network=none so commands cannot reach the network.
         "docker_network": True,

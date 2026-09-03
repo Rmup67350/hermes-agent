@@ -1421,7 +1421,13 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     import time
 
     raw_task_id = task_id or "default"
-    task_id = _resolve_container_task_id(raw_task_id)
+    initial_config = _get_env_config()
+    from tools.workspace_bootstrap import uses_dynamic_workspace_bootstrap
+    task_id = (
+        raw_task_id
+        if uses_dynamic_workspace_bootstrap(initial_config)
+        else _resolve_container_task_id(raw_task_id)
+    )
 
     # Fast path: check cache -- but also verify the underlying environment
     # is still alive (it may have been killed by the cleanup thread).
@@ -1477,7 +1483,9 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         if terminal_env is None:
             from tools.terminal_tool import resolve_task_overrides
 
-            config = _get_env_config()
+            config = initial_config
+            from tools.workspace_bootstrap import prepare_workspace_only_config
+            config = prepare_workspace_only_config(config, task_id=raw_task_id)
             env_type = config["env_type"]
             overrides = resolve_task_overrides(raw_task_id)
 
@@ -1533,8 +1541,14 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "docker_volumes": config.get("docker_volumes", []),
                     "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                     "docker_forward_env": config.get("docker_forward_env", []),
+                    "docker_env": config.get("docker_env", {}),
                     "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                     "docker_network": config.get("docker_network", True),
+                    "docker_extra_args": config.get("docker_extra_args", []),
+                    "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+                    "docker_workspace_only": config.get("docker_workspace_only", False),
+                    "workspace_identity": config.get("workspace_identity"),
+                    "workspace_transport": config.get("workspace_transport"),
                 }
 
             ssh_config = None
@@ -1553,6 +1567,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "persistent": config.get("local_persistent", False),
                 }
 
+            from tools.workspace_bootstrap import revalidate_workspace_identity
+            revalidate_workspace_identity(config)
             terminal_env = _create_environment(
                 env_type=env_type,
                 image=image,

@@ -1198,6 +1198,11 @@ def _probe_remote_backend(env_type: str) -> str | None:
 
     try:
         config = _get_env_config()
+        from tools.workspace_bootstrap import uses_dynamic_workspace_bootstrap
+        if uses_dynamic_workspace_bootstrap(config):
+            logger.debug("Backend probe skipped for dynamic workspace-only Docker")
+            _BACKEND_PROBE_CACHE[cache_key] = ""
+            return None
         # Build the environment the same way tools/terminal_tool.py does for a
         # live command: select the backend image, then assemble ssh/container
         # config from the env-derived dict. (There is no `get_environment`
@@ -1243,6 +1248,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
                 "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
                 "docker_shared_container_key": config.get("docker_shared_container_key", ""),
                 "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+                "docker_workspace_only": config.get("docker_workspace_only", False),
             }
 
         env = _create_environment(

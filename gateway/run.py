@@ -2713,6 +2713,8 @@ if _config_path.exists():
                 "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
                 "docker_shared_container_key": "TERMINAL_DOCKER_SHARED_CONTAINER_KEY",
                 "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
+                "docker_workspace_only": "TERMINAL_DOCKER_WORKSPACE_ONLY",
+                "workspace_bootstrap": "TERMINAL_WORKSPACE_BOOTSTRAP",
                 "sandbox_dir": "TERMINAL_SANDBOX_DIR",
                 "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
             }

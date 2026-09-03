@@ -876,7 +876,13 @@ def _get_or_create_env(task_id: str):
         _resolve_container_task_id, _resolve_task_host_cwd,
     )
 
-    effective_task_id = _resolve_container_task_id(task_id)
+    raw_config = _get_env_config()
+    from tools.workspace_bootstrap import uses_dynamic_workspace_bootstrap
+    effective_task_id = (
+        task_id or "default"
+        if uses_dynamic_workspace_bootstrap(raw_config)
+        else _resolve_container_task_id(task_id)
+    )
 
     # Fast path: environment already exists
     with _env_lock:
@@ -896,7 +902,9 @@ def _get_or_create_env(task_id: str):
                 _last_activity[effective_task_id] = time.time()
                 return _active_environments[effective_task_id], _get_env_config()["env_type"]
 
-        config = _get_env_config()
+        config = raw_config
+        from tools.workspace_bootstrap import prepare_workspace_only_config
+        config = prepare_workspace_only_config(config, task_id=task_id)
         env_type = config["env_type"]
         overrides = _task_env_overrides.get(effective_task_id, {})
 
@@ -924,8 +932,16 @@ def _get_or_create_env(task_id: str):
                 "container_persistent": config.get("container_persistent", True),
                 "vercel_runtime": config.get("vercel_runtime", ""),
                 "docker_volumes": config.get("docker_volumes", []),
+                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+                "docker_forward_env": config.get("docker_forward_env", []),
+                "docker_env": config.get("docker_env", {}),
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                 "docker_network": config.get("docker_network", True),
+                "docker_extra_args": config.get("docker_extra_args", []),
+                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+                "docker_workspace_only": config.get("docker_workspace_only", False),
+                "workspace_identity": config.get("workspace_identity"),
+                "workspace_transport": config.get("workspace_transport"),
             }
 
         ssh_config = None
@@ -946,6 +962,8 @@ def _get_or_create_env(task_id: str):
 
         logger.info("Creating new %s environment for execute_code task %s...",
                      env_type, effective_task_id[:8])
+        from tools.workspace_bootstrap import revalidate_workspace_identity
+        revalidate_workspace_identity(config)
         env = _create_environment(
             env_type=env_type,
             image=image,

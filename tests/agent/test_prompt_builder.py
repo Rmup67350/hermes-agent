@@ -820,6 +820,30 @@ class TestEnvironmentHints:
         assert "Linux 6.8.0" in line
         assert "root" in line
 
+    def test_probe_refuses_dynamic_workspace_bootstrap_before_creating_docker(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import tools.terminal_tool as _tt
+
+        _pb._clear_backend_probe_cache()
+        monkeypatch.setattr(
+            _tt,
+            "_get_env_config",
+            lambda: {
+                "env_type": "docker",
+                "docker_workspace_only": True,
+                "workspace_bootstrap": {"trusted": "spec"},
+            },
+        )
+        monkeypatch.setattr(
+            _tt,
+            "_create_environment",
+            lambda **_kwargs: pytest.fail(
+                "prompt probing must not bootstrap or mount a dynamic host workspace"
+            ),
+        )
+
+        assert _pb._probe_remote_backend("docker") is None
+
 
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):
         """HERMES_ENVIRONMENT_HINT lets an embedder describe the runtime env."""

@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from io import StringIO
@@ -1325,6 +1326,185 @@ def test_reap_orphan_returns_zero_when_no_matches(monkeypatch):
     assert removed == 0
     rms = [c for c in calls if isinstance(c[0], list) and c[0][1:2] == ["rm"]]
     assert not rms, "no rm calls expected when ps returns empty"
+
+
+def test_reap_orphan_removes_stale_exited_container(monkeypatch):
+    """An Exited container older than max_age_seconds must be removed.
+    This is the core repair path for issue #20561 — without the reaper,
+    SIGKILL'd Hermes processes leak containers permanently."""
+    old = _now_iso(offset_seconds=900)  # 15 minutes ago
+    calls = _reaper_run_mock(
+        monkeypatch, ps_ids=["old-cid"], inspect_responses={"old-cid": old},
+    )
+
+    removed = docker_env.reap_orphan_containers(
+        max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
+    )
+
+    assert removed == 1
+    rms = [c for c in calls if isinstance(c[0], list) and c[0][1:2] == ["rm"]]
+    assert len(rms) == 1
+    assert "old-cid" in rms[0][0], f"expected rm of old-cid, got {rms[0][0]}"
+
+
+def test_reap_orphan_removes_only_its_private_named_volumes(monkeypatch):
+    old = _now_iso(offset_seconds=900)
+    calls = []
+
+    def _run(command, **kwargs):
+        calls.append(command)
+        if command[1] == "ps":
+            return subprocess.CompletedProcess(command, 0, stdout="old-cid\n", stderr="")
+        if command[1] == "inspect" and "FinishedAt" in command[-2]:
+            return subprocess.CompletedProcess(command, 0, stdout=old + "\n", stderr="")
+        if command[1] == "inspect" and "Config.Labels" in command[-2]:
+            labels = {
+                "hermes-agent": "1",
+                "hermes-workspace-only": "1",
+                "hermes-task-id": "task-a",
+                "hermes-profile": "default",
+            }
+            return subprocess.CompletedProcess(
+                command, 0, stdout=json.dumps(labels) + "\n", stderr=""
+            )
+        if command[1:3] == ["volume", "inspect"]:
+            name = command[-1]
+            if name == "hermes-workspace-owned":
+                labels = {
+                    "hermes-agent": "1",
+                    "hermes-workspace-only": "1",
+                    "hermes-private-kind": "workspace",
+                    "hermes-task-id": "task-a",
+                    "hermes-profile": "default",
+                }
+            elif name == "hermes-git-owned":
+                labels = {
+                    "hermes-agent": "1",
+                    "hermes-workspace-only": "1",
+                    "hermes-private-kind": "git",
+                    "hermes-task-id": "task-a",
+                    "hermes-profile": "default",
+                }
+            else:
+                labels = {}
+            return subprocess.CompletedProcess(
+                command, 0, stdout=json.dumps(labels) + "\n", stderr=""
+            )
+        if command[1] == "inspect" and "Mounts" in command[-2]:
+            mounts = [
+                {"Type": "volume", "Name": "hermes-workspace-owned"},
+                {"Type": "volume", "Name": "hermes-git-owned"},
+                {"Type": "volume", "Name": "hermes-workspace-spoofed"},
+                {"Type": "volume", "Name": "foreign-volume"},
+                {"Type": "bind", "Name": "hermes-workspace-not-a-volume"},
+            ]
+            return subprocess.CompletedProcess(
+                command, 0, stdout=json.dumps(mounts) + "\n", stderr=""
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    removed = docker_env.reap_orphan_containers(
+        max_age_seconds=600,
+        profile_filter="default",
+        docker_exe="/usr/bin/docker",
+    )
+
+    assert removed == 1
+    volume_removals = [
+        command[-1]
+        for command in calls
+        if command[1:4] == ["volume", "rm", "-f"]
+    ]
+    assert set(volume_removals) == {"hermes-workspace-owned", "hermes-git-owned"}
+
+
+def test_reap_orphan_spares_recently_exited_container(monkeypatch):
+    """A container exited within max_age_seconds must NOT be reaped — that
+    container belongs to a Hermes process that just finished and may be
+    about to be replaced. Conservative window prevents racing sibling
+    processes."""
+    recent = _now_iso(offset_seconds=60)  # 1 minute ago
+    calls = _reaper_run_mock(
+        monkeypatch, ps_ids=["recent-cid"], inspect_responses={"recent-cid": recent},
+    )
+
+    removed = docker_env.reap_orphan_containers(
+        max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
+    )
+
+    assert removed == 0
+    rms = [c for c in calls if isinstance(c[0], list) and c[0][1:2] == ["rm"]]
+    assert not rms, f"recent container must not be reaped, got rm calls: {rms}"
+
+
+def test_reap_orphan_scopes_to_profile_filter_via_label(monkeypatch):
+    """The reaper must pass ``--filter label=hermes-profile=<profile>`` to
+    docker ps so it never sweeps another profile's containers. A research
+    profile must not tear down the default profile's stragglers."""
+    calls = _reaper_run_mock(monkeypatch, ps_ids=[], inspect_responses={})
+
+    docker_env.reap_orphan_containers(
+        max_age_seconds=600, profile_filter="research-bot", docker_exe="/usr/bin/docker",
+    )
+
+    ps_calls = [c for c in calls if isinstance(c[0], list) and c[0][1:2] == ["ps"]]
+    assert ps_calls, "expected at least one docker ps call"
+    flat = " ".join(ps_calls[0][0])
+    assert "label=hermes-profile=research-bot" in flat, (
+        f"profile filter not applied to docker ps; got args: {ps_calls[0][0]}"
+    )
+    assert "label=hermes-agent=1" in flat, (
+        f"hermes-agent label filter must also be applied; got: {ps_calls[0][0]}"
+    )
+    assert "status=exited" in flat, (
+        "must filter to exited containers only — running containers may "
+        "belong to a sibling Hermes process and must NEVER be reaped"
+    )
+
+
+def test_reap_orphan_skips_container_with_unparseable_finished_at(monkeypatch):
+    """If docker inspect returns the zero-value ``0001-01-01T00:00:00Z`` (no
+    FinishedAt yet) or an unparseable timestamp, the reaper must leave the
+    container alone. Defensive — never reap a container whose age we can't
+    determine."""
+    calls = _reaper_run_mock(
+        monkeypatch,
+        ps_ids=["never-finished", "garbage-ts"],
+        inspect_responses={
+            "never-finished": "0001-01-01T00:00:00Z",
+            "garbage-ts": "not-a-timestamp",
+        },
+    )
+
+    removed = docker_env.reap_orphan_containers(
+        max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
+    )
+
+    assert removed == 0
+    rms = [c for c in calls if isinstance(c[0], list) and c[0][1:2] == ["rm"]]
+    assert not rms, (
+        f"reaper must NOT remove containers with unparseable FinishedAt; got: {rms}"
+    )
+
+
+def test_reap_orphan_handles_docker_ps_failure_gracefully(monkeypatch):
+    """If docker ps itself fails (daemon down, permission denied), the
+    reaper returns 0 without crashing. The reaper is best-effort plumbing,
+    not a critical path — it must never block container creation."""
+    def _failing_ps(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "ps":
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="Cannot connect to daemon")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _failing_ps)
+
+    # Must not raise
+    removed = docker_env.reap_orphan_containers(
+        max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
+    )
+    assert removed == 0
 
 
 def test_reap_orphan_continues_after_individual_rm_failure(monkeypatch):

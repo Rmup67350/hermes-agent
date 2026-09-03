@@ -25,6 +25,9 @@ mirrors the pattern used in tests/hermes_cli/test_config_drift.py.
 
 import ast
 import inspect
+import json
+
+import pytest
 
 
 def _extract_dict_values(source: str, dict_name: str) -> set[str]:
@@ -322,3 +325,46 @@ def test_docker_forward_env_is_bridged_everywhere():
     assert "docker_forward_env" in _gateway_env_map_keys()
     assert "docker_forward_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()
+
+
+def _workspace_bootstrap_spec() -> dict[str, str]:
+    return {
+        "registry": "/registry",
+        "policy": "/policy.json",
+        "profile": "code-a",
+        "agent": "code-a",
+        "key": "HER-96",
+        "lane_sha256": "a" * 64,
+    }
+
+
+def test_workspace_bootstrap_is_bridged_by_canonical_config_helper(monkeypatch):
+    from hermes_cli import config as hc_config
+
+    monkeypatch.setattr(hc_config, "read_raw_config", lambda: {"terminal": {}})
+    target = {}
+    hc_config.apply_terminal_config_to_env(
+        env=target,
+        config={"terminal": {"workspace_bootstrap": _workspace_bootstrap_spec()}},
+        override=True,
+    )
+
+    assert json.loads(target["TERMINAL_WORKSPACE_BOOTSTRAP"]) == _workspace_bootstrap_spec()
+    assert hc_config.terminal_config_env_var_for_key("terminal.workspace_bootstrap") == (
+        "TERMINAL_WORKSPACE_BOOTSTRAP"
+    )
+
+
+def test_workspace_bootstrap_bridge_rejects_unknown_spec_fields(monkeypatch):
+    from hermes_cli import config as hc_config
+    from tools.workspace_bootstrap import WorkspaceBootstrapError
+
+    monkeypatch.setattr(hc_config, "read_raw_config", lambda: {"terminal": {}})
+    invalid = {**_workspace_bootstrap_spec(), "command": "untrusted"}
+
+    with pytest.raises(WorkspaceBootstrapError, match="required trusted fields"):
+        hc_config.apply_terminal_config_to_env(
+            env={},
+            config={"terminal": {"workspace_bootstrap": invalid}},
+            override=True,
+        )

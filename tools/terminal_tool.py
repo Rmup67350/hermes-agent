@@ -376,6 +376,9 @@ def _docker_has_host_access(config: Dict[str, Any]) -> bool:
     """Return True when a Docker sandbox exposes host paths through bind mounts."""
     if config.get("env_type") != "docker":
         return False
+    from tools.workspace_bootstrap import uses_dynamic_workspace_bootstrap
+    if uses_dynamic_workspace_bootstrap(config):
+        return True
     if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
         return True
     return any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
@@ -1883,6 +1886,10 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_shared_container_key": os.getenv(
             "TERMINAL_DOCKER_SHARED_CONTAINER_KEY", ""
         ).strip(),
+        "docker_workspace_only": os.getenv(
+            "TERMINAL_DOCKER_WORKSPACE_ONLY", "false"
+        ).lower() in {"true", "1", "yes"},
+        "workspace_bootstrap": _parse_env_var("TERMINAL_WORKSPACE_BOOTSTRAP", "{}", json.loads, "valid JSON"),
         # Startup orphan reaper for hermes-tagged containers left behind by
         # crashed / SIGKILL'd previous processes that bypassed atexit.
         # Conservative: only sweeps Exited containers older than 2× the
@@ -2018,6 +2025,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             ),
             shared_container_key=cc.get("docker_shared_container_key", ""),
             shm_size=cc.get("docker_shm_size", "1g"),
+            workspace_only=cc.get("docker_workspace_only", False),
+            workspace_identity=cc.get("workspace_identity"),
+            workspace_transport=cc.get("workspace_transport"),
         )
         # Marker read by is_persistent_env(): a session-scoped container
         # survives BETWEEN turns (skip per-turn teardown) but is removed at
@@ -2887,7 +2897,11 @@ def terminal_tool(
             # interpreter, never inside the model's configured Docker/SSH/etc.
             # Keep their environment cache separate from the configured backend.
             effective_task_id = f"host-local-{effective_task_id}"
-
+        # A dynamic workspace-only bind is the exception: one container can
+        # safely mount only the worktree claimed for its originating session.
+        from tools.workspace_bootstrap import uses_dynamic_workspace_bootstrap
+        if not _host_local and uses_dynamic_workspace_bootstrap(config):
+            effective_task_id = task_id or "default"
         # Check per-task overrides (set by environments like TerminalBench2Env)
         # before falling back to global env var config. ``resolve_task_overrides``
         # reads the raw task id first then the collapsed container id, so a
@@ -3014,6 +3028,20 @@ def terminal_tool(
                         needs_creation = False
 
                 if needs_creation:
+                    from tools.workspace_bootstrap import (
+                        prepare_workspace_only_config,
+                        revalidate_workspace_identity,
+                    )
+
+                    config = prepare_workspace_only_config(config, task_id=task_id)
+                    env_type = config["env_type"]
+                    if env_type == "docker":
+                        image = overrides.get("docker_image") or config["docker_image"]
+                    cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
+                    if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+                        cwd = config["cwd"]
+                    default_timeout = config["timeout"]
+                    effective_timeout = timeout or default_timeout
                     if env_type == "singularity":
                         _check_disk_usage_warning()
                     logger.info("Creating new %s environment for task %s...", env_type, effective_task_id[:8])
@@ -3023,6 +3051,12 @@ def terminal_tool(
                             _container_config_from_config(config)
                             if _is_container_backend(env_type) else None
                         )
+                        if container_config is not None:
+                            container_config.update({
+                                "docker_workspace_only": config.get("docker_workspace_only", False),
+                                "workspace_identity": config.get("workspace_identity"),
+                                "workspace_transport": config.get("workspace_transport"),
+                            })
 
                         local_config = None
                         if env_type == "local":
@@ -3030,6 +3064,7 @@ def terminal_tool(
                                 "persistent": config.get("local_persistent", False),
                             }
 
+                        revalidate_workspace_identity(config)
                         new_env = _create_environment(
                             env_type=env_type,
                             image=image,
@@ -3066,6 +3101,8 @@ def terminal_tool(
         from tools.approval import get_current_session_key
 
         session_key = get_current_session_key(default="") or (task_id or "")
+        if uses_dynamic_workspace_bootstrap(config):
+            cwd = getattr(env, "cwd", cwd) or cwd
 
         # Hard-block: gateway lifecycle commands (systemctl/launchctl/hermes
         # restart|stop|uninstall targeting hermes-gateway) must never run inside the
