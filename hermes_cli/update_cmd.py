@@ -549,6 +549,50 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
     except (subprocess.CalledProcessError, OSError):
         return None
 
+
+UPDATE_ANCESTRY_FAST_FORWARD_SAFE = "FAST_FORWARD_SAFE"
+UPDATE_ANCESTRY_LOCAL_ONLY_OR_DIVERGED = "LOCAL_ONLY_OR_DIVERGED"
+UPDATE_ANCESTRY_UNKNOWN = "UNKNOWN"
+
+
+def _classify_update_ancestry(
+    git_cmd: list[str], cwd, branch: str, local_ref: str = "HEAD"
+) -> tuple[str, str | None]:
+    """Prove that moving ``local_ref`` to ``origin/branch`` loses no commits."""
+    remote_ref = f"origin/{branch}"
+
+    def _resolve(ref: str) -> str | None:
+        result = subprocess.run(
+            git_cmd + ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    try:
+        local_sha = _resolve(local_ref)
+        remote_sha = _resolve(remote_ref)
+        if not local_sha or not remote_sha:
+            return UPDATE_ANCESTRY_UNKNOWN, "local or remote ref could not be resolved"
+        probe = subprocess.run(
+            git_cmd + ["merge-base", "--is-ancestor", local_sha, remote_sha],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return UPDATE_ANCESTRY_UNKNOWN, f"git ancestry probe failed: {exc}"
+    if probe.returncode == 0:
+        return UPDATE_ANCESTRY_FAST_FORWARD_SAFE, None
+    if probe.returncode == 1:
+        return UPDATE_ANCESTRY_LOCAL_ONLY_OR_DIVERGED, None
+    return UPDATE_ANCESTRY_UNKNOWN, f"git merge-base exited {probe.returncode}"
+
 # Files that define the editable install. A pull that touches none of them
 # cannot have invalidated it.
 _INSTALL_DEFINING_FILES = (
@@ -8742,26 +8786,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         )
                         sys.exit(1)
                 else:
-                    # Same branch as the update target — a true upstream
-                    # force-push/rebase. Local changes are already stashed;
-                    # reset to match the remote exactly (original behaviour).
-                    print(
-                        "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    classification, detail = _classify_update_ancestry(
+                        git_cmd, _m().PROJECT_ROOT, branch
                     )
-                    reset_result = subprocess.run(
-                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
-                        cwd=_m().PROJECT_ROOT,
-                        capture_output=True,
-                        text=True, encoding="utf-8", errors="replace",
-                    )
-                    if reset_result.returncode != 0:
-                        print(f"✗ Failed to reset to origin/{branch}.")
-                        if reset_result.stderr.strip():
-                            print(f"  {reset_result.stderr.strip()}")
+                    print()
+                    if classification == UPDATE_ANCESTRY_LOCAL_ONLY_OR_DIVERGED:
                         print(
-                            f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                            f"✗ Update refused: local commits are not present on origin/{branch}."
                         )
-                        sys.exit(1)
+                    else:
+                        print(
+                            f"✗ Update refused: ancestry to origin/{branch} could not be proven safe."
+                        )
+                    if detail:
+                        print(f"  {detail}")
+                    print("  No automatic reset was attempted; local history is preserved.")
+                    sys.exit(1)
 
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit
