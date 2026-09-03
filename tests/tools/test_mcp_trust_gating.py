@@ -117,19 +117,21 @@ class TestTrustGateAtCallTime:
         assert "error" in json.loads(raw)
         assert "did not approve" in json.loads(raw)["error"]
 
-    def test_read_only_tool_on_untrusted_server_skips_approval(
+    def test_read_only_hint_on_untrusted_server_still_requires_approval(
         self, fake_session
     ):
-        """readOnlyHint=True tools pass without consulting approval."""
+        """Server-supplied readOnlyHint cannot authorize an RPC."""
         _set_trust("srv", "untrusted")
         _set_read_only("srv", "list_repos", True)
         handler = mcp_tool._make_tool_handler("srv", "list_repos", 30.0)
         with patch(
-            "tools.approval.request_elicitation_consent"
+            "tools.approval.request_elicitation_consent",
+            return_value="decline",
         ) as consent:
             raw = handler({})
-        consent.assert_not_called()
-        assert json.loads(raw) == {"result": "ok"}
+        consent.assert_called_once()
+        fake_session.call_tool.assert_not_awaited()
+        assert "did not approve" in json.loads(raw)["error"]
 
     def test_trusted_server_skips_approval_for_write_tools(
         self, fake_session
@@ -144,15 +146,43 @@ class TestTrustGateAtCallTime:
         consent.assert_not_called()
         assert json.loads(raw) == {"result": "ok"}
 
-    def test_unconfigured_server_defaults_to_full_trust(self, fake_session):
-        """Backward compat: servers with no trust key behave as before."""
+    def test_unconfigured_server_defaults_to_untrusted(self, fake_session):
+        """Missing operator trust must require approval."""
         handler = mcp_tool._make_tool_handler("srv", "delete_repo", 30.0)
         with patch(
-            "tools.approval.request_elicitation_consent"
+            "tools.approval.request_elicitation_consent",
+            return_value="decline",
         ) as consent:
             raw = handler({"repo": "x"})
-        consent.assert_not_called()
-        assert json.loads(raw) == {"result": "ok"}
+        consent.assert_called_once()
+        fake_session.call_tool.assert_not_awaited()
+        assert "did not approve" in json.loads(raw)["error"]
+
+    @pytest.mark.parametrize(
+        ("factory", "tool_name", "args"),
+        [
+            (mcp_tool._make_list_resources_handler, "list_resources", {}),
+            (mcp_tool._make_read_resource_handler, "read_resource", {"uri": "file:///x"}),
+            (mcp_tool._make_list_prompts_handler, "list_prompts", {}),
+            (mcp_tool._make_get_prompt_handler, "get_prompt", {"name": "danger"}),
+        ],
+    )
+    def test_untrusted_utility_denial_blocks_connection_and_rpc(
+        self, factory, tool_name, args,
+    ):
+        _set_trust("srv", "untrusted")
+        handler = factory("srv", 30.0)
+        with patch(
+            "tools.approval.request_elicitation_consent",
+            return_value="decline",
+        ) as consent, patch.object(
+            mcp_tool, "_get_connected_server_for_call"
+        ) as connect:
+            raw = handler(args)
+        consent.assert_called_once()
+        connect.assert_not_called()
+        assert "did not approve" in json.loads(raw)["error"]
+        assert tool_name in consent.call_args.args[0]
 
     def test_read_only_false_hint_is_gated(self, fake_session):
         """An explicit readOnlyHint=False is write-capable."""
@@ -189,8 +219,7 @@ class TestTrustNormalization:
         assert mcp_tool._normalize_server_trust("full") == "full"
         assert mcp_tool._normalize_server_trust("UNTRUSTED") == "untrusted"
         assert mcp_tool._normalize_server_trust("  Full ") == "full"
-        # Missing key → default full (backward compatible; documented).
-        assert mcp_tool._normalize_server_trust(None) == "full"
+        assert mcp_tool._normalize_server_trust(None) == "untrusted"
 
 
 class TestAnnotationCaptureAtDiscovery:

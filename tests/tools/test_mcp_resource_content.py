@@ -197,6 +197,7 @@ class TestErrorPathResourceText:
         mcp_tool._reset_server_error("test-server")
         try:
             with mock_patch.dict(mcp_tool._servers, {"test-server": fake_server}), \
+                 mock_patch.dict(mcp_tool._server_trust_levels, {"test-server": "full"}), \
                  mock_patch("tools.mcp_tool._run_on_mcp_loop", side_effect=_fake_run_on_mcp_loop):
                 fake_session.call_tool = AsyncMock()
                 yield fake_session, mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)

@@ -14,6 +14,7 @@ in-process ``threading.Lock`` cannot do.
 """
 
 import os
+import stat
 import subprocess
 import sys
 import textwrap
@@ -26,6 +27,57 @@ from cron import jobs
 
 # Repo root (parent of the ``cron`` package) so the child process can import it.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(jobs.__file__)))
+
+
+@pytest.fixture
+def isolated_store(tmp_path, monkeypatch):
+    cron_dir = tmp_path / "cron"
+    monkeypatch.setattr(jobs, "CRON_DIR", cron_dir)
+    monkeypatch.setattr(jobs, "JOBS_FILE", cron_dir / "jobs.json")
+    monkeypatch.setattr(jobs, "OUTPUT_DIR", cron_dir / "output")
+    jobs.ensure_dirs()
+    return cron_dir
+
+
+@pytest.mark.skipif(jobs.fcntl is None, reason="POSIX fcntl/flock required")
+def test_jobs_lock_rejects_symlink_and_preserves_target(isolated_store, tmp_path):
+    victim = tmp_path / "victim"
+    victim.write_text("do-not-touch", encoding="utf-8")
+    jobs._jobs_lock_file().symlink_to(victim)
+    with pytest.raises(RuntimeError, match="cron jobs lock"):
+        with jobs._jobs_lock():
+            pytest.fail("symlinked lock path entered critical section")
+    assert victim.read_text(encoding="utf-8") == "do-not-touch"
+
+
+@pytest.mark.skipif(jobs.fcntl is None, reason="POSIX fcntl/flock required")
+def test_jobs_lock_is_owner_only_regular_single_link(isolated_store):
+    with jobs._jobs_lock():
+        lock_stat = os.stat(jobs._jobs_lock_file(), follow_symlinks=False)
+    assert stat.S_ISREG(lock_stat.st_mode)
+    assert stat.S_IMODE(lock_stat.st_mode) == 0o600
+    assert lock_stat.st_uid == os.geteuid()
+    assert lock_stat.st_nlink == 1
+
+
+@pytest.mark.skipif(jobs.fcntl is None, reason="POSIX fcntl/flock required")
+def test_jobs_lock_rejects_path_replacement_before_entry(isolated_store, monkeypatch):
+    lock_path = jobs._jobs_lock_file()
+    real_flock = jobs.fcntl.flock
+    replaced = False
+
+    def replace_then_flock(fd, operation):
+        nonlocal replaced
+        if not replaced and operation & jobs.fcntl.LOCK_EX:
+            replaced = True
+            lock_path.unlink()
+            lock_path.write_text("replacement", encoding="utf-8")
+        return real_flock(fd, operation)
+
+    monkeypatch.setattr(jobs.fcntl, "flock", replace_then_flock)
+    with pytest.raises(RuntimeError, match="cron jobs lock"):
+        with jobs._jobs_lock():
+            pytest.fail("replaced lock path entered critical section")
 
 
 @pytest.mark.skipif(jobs.fcntl is None, reason="POSIX fcntl/flock required")

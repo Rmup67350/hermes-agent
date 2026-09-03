@@ -4572,7 +4572,7 @@ _CIRCUIT_BREAKER_THRESHOLD = 3
 _CIRCUIT_BREAKER_COOLDOWN_SEC = 60.0
 
 # ---------------------------------------------------------------------------
-# Trust-tier gating state (per-server trust + per-tool readOnlyHint).
+# Trust-tier gating state (per-server trust + readOnlyHint display metadata).
 #
 # ``trust: full | untrusted`` is a per-server key in the MCP server config
 # (config.yaml → mcp_servers.<name>.trust). On an ``untrusted`` server,
@@ -4589,9 +4589,8 @@ _CIRCUIT_BREAKER_COOLDOWN_SEC = 60.0
 #   skipping approval for calls the operator was already warned about when
 #   they marked the server untrusted. It can never widen access on top of
 #   the approval a write-capable tool would otherwise need.
-# - Default trust for servers with NO ``trust`` key is ``full`` (gate off)
-#   for backward compatibility — existing configs keep working unchanged.
-#   Operators opt servers into gating explicitly with ``trust: untrusted``.
+# - Default trust for servers with NO ``trust`` key is ``untrusted``. Only an
+#   explicit operator-side ``trust: full`` disables per-call approval.
 # - Any unrecognized ``trust`` value normalizes to ``untrusted``
 #   (fail closed): a typo must never silently disable the gate.
 #
@@ -4608,12 +4607,12 @@ _TRUST_UNTRUSTED = "untrusted"
 def _normalize_server_trust(value: Any) -> str:
     """Normalize a config ``trust`` value to ``full`` or ``untrusted``.
 
-    Missing (None) → ``full`` (backward-compatible default, documented
-    above). Any string other than the two known tiers → ``untrusted``:
+    Missing (None) and any string other than the two known tiers resolve to
+    ``untrusted``:
     a misspelled tier must fail closed, never silently disable gating.
     """
     if value is None:
-        return _TRUST_FULL
+        return _TRUST_UNTRUSTED
     text = str(value).strip().lower()
     if text == _TRUST_FULL:
         return _TRUST_FULL
@@ -4666,11 +4665,10 @@ def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
     formatted via ``tool_error``) when the call is blocked. Fail-closed:
     approval-system errors block the call.
     """
-    trust = _server_trust_levels.get(server_name, _TRUST_FULL)
+    trust = _server_trust_levels.get(server_name, _TRUST_UNTRUSTED)
     if trust != _TRUST_UNTRUSTED:
         return None
-    if _tool_read_only_hints.get(server_name, {}).get(tool_name) is True:
-        return None
+
 
     # Lazy import mirrors the elicitation handler's pattern: tools.approval
     # routes the prompt to whichever surface owns the session (CLI, TUI,
@@ -6421,6 +6419,9 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists resources from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
+        gate_error = _trust_gate_check(server_name, "list_resources")
+        if gate_error is not None:
+            return gate_error
         server = _get_connected_server_for_call(server_name)
         if not server or not server.session:
             return tool_error(f"MCP server '{server_name}' is not connected")
@@ -6480,6 +6481,9 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that reads a resource by URI from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
+        gate_error = _trust_gate_check(server_name, "read_resource")
+        if gate_error is not None:
+            return gate_error
         server = _get_connected_server_for_call(server_name)
         if not server or not server.session:
             return tool_error(f"MCP server '{server_name}' is not connected")
@@ -6541,6 +6545,9 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists prompts from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
+        gate_error = _trust_gate_check(server_name, "list_prompts")
+        if gate_error is not None:
+            return gate_error
         server = _get_connected_server_for_call(server_name)
         if not server or not server.session:
             return tool_error(f"MCP server '{server_name}' is not connected")
@@ -6602,6 +6609,9 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that gets a prompt by name from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
+        gate_error = _trust_gate_check(server_name, "get_prompt")
+        if gate_error is not None:
+            return gate_error
         server = _get_connected_server_for_call(server_name)
         if not server or not server.session:
             return tool_error(f"MCP server '{server_name}' is not connected")
@@ -8370,6 +8380,8 @@ def shutdown_mcp_servers():
         with _lock:
             _server_connect_retry_after.clear()
             _server_connect_failures.clear()
+            _server_trust_levels.clear()
+            _tool_read_only_hints.clear()
         _stop_mcp_loop()
         return
 
@@ -8390,6 +8402,8 @@ def shutdown_mcp_servers():
             # stale per-server backoff from before the restart (#50394).
             _server_connect_retry_after.clear()
             _server_connect_failures.clear()
+            _server_trust_levels.clear()
+            _tool_read_only_hints.clear()
 
     with _lock:
         loop = _mcp_loop
@@ -8413,6 +8427,8 @@ def shutdown_mcp_servers():
     with _lock:
         _server_connect_retry_after.clear()
         _server_connect_failures.clear()
+        _server_trust_levels.clear()
+        _tool_read_only_hints.clear()
 
     _stop_mcp_loop()
 

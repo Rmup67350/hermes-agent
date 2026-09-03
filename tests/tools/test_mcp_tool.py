@@ -55,10 +55,11 @@ def _make_call_result(text="file contents here", is_error=False):
 
 def _make_mock_server(name, session=None, tools=None):
     """Create an MCPServerTask with mock attributes for testing."""
-    from tools.mcp_tool import MCPServerTask
+    from tools.mcp_tool import MCPServerTask, _server_trust_levels
     server = MCPServerTask(name)
     server.session = session
     server._tools = tools or []
+    _server_trust_levels[name] = "full"
     return server
 
 

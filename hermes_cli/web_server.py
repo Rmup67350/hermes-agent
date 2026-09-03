@@ -13617,7 +13617,7 @@ def _normalize_mcp_server_create(
     if auth not in {"none", "header", "oauth"}:
         raise ValueError(f"Unsupported auth mode: {auth}")
 
-    server_config: Dict[str, Any] = {}
+    server_config: Dict[str, Any] = {"trust": "untrusted"}
     if url:
         if body.args:
             raise ValueError("Arguments are only supported for stdio MCP servers")
@@ -13681,6 +13681,9 @@ def _mcp_server_summary(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
         "env": _redact_mcp_env(cfg.get("env") or {}),
         "auth": auth,
         "enabled": cfg.get("enabled", True) is not False,
+        "trust": "full"
+        if str(cfg.get("trust") or "").strip().lower() == "full"
+        else "untrusted",
         # Tool selection: list of enabled tool names, or None = all.
         "tools": cfg.get("tools"),
     }

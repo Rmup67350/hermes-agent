@@ -653,6 +653,15 @@ class TestConfigHelpers:
         servers = _get_mcp_servers()
         assert "mysvr" in servers
         assert servers["mysvr"]["url"] == "https://example.com/mcp"
+        assert servers["mysvr"]["trust"] == "untrusted"
+
+    def test_explicit_full_trust_is_preserved(self):
+        from hermes_cli.mcp_config import _get_mcp_servers, _save_mcp_server
+
+        _save_mcp_server(
+            "trusted", {"url": "https://example.com/mcp", "trust": "full"}
+        )
+        assert _get_mcp_servers()["trusted"]["trust"] == "full"
 
 
     def test_env_key_for_server(self):

@@ -85,6 +85,14 @@ def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
     return servers
 
 
+def _persisted_mcp_server_config(server_config: dict) -> dict:
+    """Return a copy with an explicit, fail-closed trust tier."""
+    persisted = dict(server_config or {})
+    trust = str(persisted.get("trust") or "").strip().lower()
+    persisted["trust"] = "full" if trust == "full" else "untrusted"
+    return persisted
+
+
 def _save_mcp_server(name: str, server_config: dict) -> bool:
     """Add or update a server entry in config.yaml.
 
@@ -92,6 +100,7 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
     rejected. MCP stdio servers are user-chosen local commands, so this blocks
     shell+egress payloads rather than whitelisting command families.
     """
+    server_config = _persisted_mcp_server_config(server_config)
     issues = validate_mcp_server_entry(name, server_config)
     if issues:
         for issue in issues:
@@ -132,18 +141,21 @@ def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
     partially applied.  An empty map removes the key entirely.
     """
     issues: List[str] = []
+    normalized: Dict[str, dict] = {}
     for name, cfg in servers.items():
         if not isinstance(cfg, dict):
             issues.append(f"Server '{name}': expected an object")
             continue
-        issues.extend(validate_mcp_server_entry(name, cfg))
+        normalized_cfg = _persisted_mcp_server_config(cfg)
+        normalized[name] = normalized_cfg
+        issues.extend(validate_mcp_server_entry(name, normalized_cfg))
 
     if issues:
         return False, issues
 
     config = load_config()
-    if servers:
-        config["mcp_servers"] = dict(servers)
+    if normalized:
+        config["mcp_servers"] = normalized
     else:
         config.pop("mcp_servers", None)
     save_config(config)

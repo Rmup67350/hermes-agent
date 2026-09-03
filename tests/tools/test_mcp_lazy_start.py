@@ -18,13 +18,17 @@ import tools.mcp_tool as mcp
 @pytest.fixture(autouse=True)
 def _reset_mcp_state():
     old_servers = dict(mcp._servers)
+    old_trust = dict(mcp._server_trust_levels)
     old_lazy = dict(mcp._lazy_server_configs)
     old_fps = dict(mcp._lazy_server_fingerprints)
     old_names = dict(mcp._lazy_server_tool_names)
     old_connecting = set(mcp._server_connecting)
+    mcp._server_trust_levels["playwright"] = "full"
     yield
     mcp._servers.clear()
     mcp._servers.update(old_servers)
+    mcp._server_trust_levels.clear()
+    mcp._server_trust_levels.update(old_trust)
     mcp._lazy_server_configs.clear()
     mcp._lazy_server_configs.update(old_lazy)
     mcp._lazy_server_fingerprints.clear()

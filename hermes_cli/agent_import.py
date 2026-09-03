@@ -760,7 +760,7 @@ class AgentImporter:
                             "MCP server already exists in Hermes config")
                 continue
 
-            hermes_srv: Dict[str, Any] = {}
+            hermes_srv: Dict[str, Any] = {"trust": "untrusted"}
             if srv.get("command"):
                 hermes_srv["command"] = srv["command"]
                 if srv.get("args"):
