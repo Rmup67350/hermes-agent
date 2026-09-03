@@ -94,6 +94,12 @@ SAMPLE_REGISTRY = {
 }
 
 
+@pytest.fixture(autouse=True)
+def enable_models_dev_probes(monkeypatch):
+    """This module exercises the external catalog path intentionally."""
+    monkeypatch.delenv("HERMES_DISABLE_EXTERNAL_PROBES", raising=False)
+
+
 class TestProviderMapping:
     def test_all_mapped_providers_are_strings(self):
         for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():

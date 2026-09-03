@@ -8,8 +8,9 @@ from tools import env_probe
 
 
 @pytest.fixture(autouse=True)
-def reset_probe_cache():
+def reset_probe_cache(monkeypatch):
     """Each test starts with a clean cache."""
+    monkeypatch.delenv("HERMES_DISABLE_EXTERNAL_PROBES", raising=False)
     env_probe._reset_cache_for_tests()
     yield
     env_probe._reset_cache_for_tests()

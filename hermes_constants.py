@@ -18,6 +18,15 @@ _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(
     "_HERMES_HOME_OVERRIDE", default=_UNSET
 )
 
+_TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
+
+
+def external_probes_disabled() -> bool:
+    """Return whether optional network/host enrichment must stay cache-only."""
+    return os.environ.get("HERMES_DISABLE_EXTERNAL_PROBES", "").strip().lower() in (
+        _TRUTHY_ENV_VALUES
+    )
+
 # ── TUI busy-indicator styles ─────────────────────────────────────────
 # Single source of truth shared by the CLI /indicator command, the TUI
 # gateway config handler, and the /help command registry. Keep in sync

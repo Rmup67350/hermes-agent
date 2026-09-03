@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_constants import external_probes_disabled
 from utils import atomic_json_write
 
 import requests
@@ -614,6 +615,9 @@ def fetch_models_dev(
     network.
     """
     global _models_dev_cache, _models_dev_cache_time, _models_dev_retry_after
+
+    if allow_network and external_probes_disabled():
+        allow_network = False
 
     if not allow_network:
         if _models_dev_cache:

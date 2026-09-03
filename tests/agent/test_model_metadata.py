@@ -34,6 +34,12 @@ from agent.model_metadata import (
 )
 
 
+@pytest.fixture(autouse=True)
+def enable_model_metadata_probes(monkeypatch):
+    """This module exercises the external metadata path intentionally."""
+    monkeypatch.delenv("HERMES_DISABLE_EXTERNAL_PROBES", raising=False)
+
+
 # =========================================================================
 # Token estimation
 # =========================================================================

@@ -38,6 +38,7 @@ import threading
 from typing import Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_constants import external_probes_disabled
 
 logger = logging.getLogger(__name__)
 
@@ -297,6 +298,8 @@ def get_environment_probe_line(*, force_refresh: bool = False) -> str:
     ``force_refresh`` is for tests; real callers should never need it.
     """
     global _CACHED_LINE, _PROBE_THREAD, _PROBE_GEN, _WAIT_ALREADY_TIMED_OUT
+    if external_probes_disabled():
+        return ""
     if force_refresh:
         with _CACHE_LOCK:
             _CACHED_LINE = None
