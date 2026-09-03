@@ -25,6 +25,7 @@ import time
 import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List, Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -87,12 +88,17 @@ def gemini_requires_tool_call_ids(model: str) -> bool:
 
 def is_native_gemini_base_url(base_url: str) -> bool:
     """Return True when the endpoint speaks Gemini's native REST API."""
-    normalized = str(base_url or "").strip().rstrip("/").lower()
+    normalized = str(base_url or "").strip()
     if not normalized:
         return False
-    if "generativelanguage.googleapis.com" not in normalized:
+    parsed = urlparse(normalized)
+    if parsed.scheme.lower() != "https":
         return False
-    return not normalized.endswith("/openai")
+    if parsed.netloc.lower() != "generativelanguage.googleapis.com":
+        return False
+    if parsed.query or parsed.fragment:
+        return False
+    return not parsed.path.rstrip("/").lower().endswith("/openai")
 
 
 def probe_gemini_tier(

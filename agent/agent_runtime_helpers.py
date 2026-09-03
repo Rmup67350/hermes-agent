@@ -2748,10 +2748,10 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent._client_log_context(),
         )
         return client
-    if agent.provider == "gemini":
+    base_url = str(client_kwargs.get("base_url", "") or "")
+    if base_url:
         from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
-        base_url = str(client_kwargs.get("base_url", "") or "")
         if is_native_gemini_base_url(base_url):
             safe_kwargs = {
                 k: v for k, v in client_kwargs.items()
@@ -4681,6 +4681,8 @@ def _iter_pool_sockets(client: Any):
     """
     try:
         http_client = getattr(client, "_client", None)
+        if http_client is None:
+            http_client = getattr(client, "_http", None)
         if http_client is None:
             # Some SDK wrappers *are* the httpx client (or expose the pool
             # directly). Fall through so mount-aware discovery still runs.
