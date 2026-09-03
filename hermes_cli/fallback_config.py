@@ -77,6 +77,16 @@ def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def _nested_fallback_providers(fallback_model: Any) -> list[Any]:
+    """Return the enabled nested profile-style fallback chain."""
+    if not isinstance(fallback_model, dict):
+        return []
+    if fallback_model.get("enable_fallback") is False:
+        return []
+    nested = fallback_model.get("fallback_providers")
+    return nested if isinstance(nested, list) else []
+
+
 def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Return the effective fallback chain merged across old and new config keys.
 
@@ -90,8 +100,13 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     chain: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
 
-    for key in ("fallback_providers", "fallback_model"):
-        for entry in _iter_fallback_entries(config.get(key)):
+    sources = (
+        config.get("fallback_providers"),
+        config.get("fallback_model"),
+        _nested_fallback_providers(config.get("fallback_model")),
+    )
+    for raw in sources:
+        for entry in _iter_fallback_entries(raw):
             identity = _entry_identity(entry)
             if identity in seen:
                 continue

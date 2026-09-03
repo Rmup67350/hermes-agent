@@ -2385,6 +2385,30 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 "    provider: openrouter\n"
                 "    model: anthropic/claude-sonnet-4",
             ))
+        elif isinstance(fb.get("fallback_providers"), list):
+            for i, entry in enumerate(fb["fallback_providers"]):
+                if not isinstance(entry, dict):
+                    issues.append(ConfigIssue(
+                        "error",
+                        f"fallback_model.fallback_providers[{i}] should be a dict, "
+                        f"got {type(entry).__name__}",
+                        "Each entry needs provider + model",
+                    ))
+                    continue
+                for field in ("provider", "model"):
+                    if not entry.get(field):
+                        issues.append(ConfigIssue(
+                            "warning",
+                            f"fallback_model.fallback_providers[{i}] is missing "
+                            f"'{field}' field — this entry will be skipped",
+                            f"Add: {field}: <value>",
+                        ))
+            if fb.get("enable_fallback") is False:
+                issues.append(ConfigIssue(
+                    "warning",
+                    "fallback_model.enable_fallback is false — the nested fallback chain is disabled",
+                    "Set enable_fallback: true (or remove it) to activate the chain",
+                ))
         elif fb:
             if not fb.get("provider"):
                 issues.append(ConfigIssue(
