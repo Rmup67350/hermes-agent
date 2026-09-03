@@ -83,9 +83,9 @@ def _load_firecrawl_cls() -> type:
     global _FIRECRAWL_CLS_CACHE
     if _FIRECRAWL_CLS_CACHE is None:
         try:
-            from tools.lazy_deps import ensure as _lazy_ensure
+            from tools.lazy_deps import ensure_importable
 
-            _lazy_ensure("search.firecrawl", prompt=False)
+            ensure_importable("search.firecrawl", "firecrawl")
         except ImportError:
             pass
         except Exception as exc:  # noqa: BLE001 — surface install hint

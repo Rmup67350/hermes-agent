@@ -204,8 +204,9 @@ def _local_runtime_hint(reason: str | None) -> str:
 def _ensure_cloud_client_dependency() -> None:
     """Install the Hindsight cloud client lazily before importing it."""
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("memory.hindsight", prompt=False)
+        from tools.lazy_deps import ensure_importable
+
+        ensure_importable("memory.hindsight", "hindsight_client")
     except ImportError:
         pass
     except Exception as exc:
@@ -1241,8 +1242,9 @@ class HindsightMemoryProvider(MemoryProvider):
                         + (f": {reason}" if reason else "")
                     )
                 try:
-                    from tools.lazy_deps import ensure as _lazy_ensure
-                    _lazy_ensure("memory.hindsight", prompt=False)
+                    from tools.lazy_deps import ensure_importable
+
+                    ensure_importable("memory.hindsight", "hindsight")
                 except ImportError:
                     pass
                 except Exception as _e:

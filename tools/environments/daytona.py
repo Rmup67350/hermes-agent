@@ -52,8 +52,9 @@ class DaytonaEnvironment(BaseEnvironment):
         super().__init__(cwd=cwd, timeout=timeout)
 
         try:
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("terminal.daytona", prompt=False)
+            from tools.lazy_deps import ensure_importable
+
+            ensure_importable("terminal.daytona", "daytona")
         except ImportError:
             pass
         except Exception as e:

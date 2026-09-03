@@ -38,7 +38,7 @@ class TestImportFalClient:
 
         result = import_fal_client()
         assert result is fake_fal_client
-        ensure.assert_called_once_with("image.fal", prompt=False)
+        ensure.assert_not_called()
 
     def test_lazy_ensure_import_error_is_swallowed(self, monkeypatch, fake_fal_client):
         """If lazy_deps.ensure raises ImportError, it's swallowed (fal_client still imported)."""
@@ -49,8 +49,10 @@ class TestImportFalClient:
 
         assert import_fal_client() is fake_fal_client
 
-    def test_lazy_ensure_other_exception_raises_import_error(self):
-        """If lazy_deps.ensure raises a non-ImportError, it's re-raised as ImportError."""
+    def test_lazy_ensure_other_exception_raises_import_error(self, monkeypatch):
+        """A missing SDK still surfaces the lazy-installer failure."""
+        monkeypatch.delitem(sys.modules, "fal_client", raising=False)
+        monkeypatch.setattr("importlib.util.find_spec", lambda _name: None)
         with patch("tools.lazy_deps.ensure", side_effect=RuntimeError("install hint")):
             with pytest.raises(ImportError, match="install hint"):
                 import_fal_client()

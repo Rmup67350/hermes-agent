@@ -67,6 +67,7 @@ Adding a new backend:
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
 import re
@@ -973,6 +974,23 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
         )
 
     logger.info("Lazy install complete for feature %r", feature)
+
+
+def ensure_importable(feature: str, module: str) -> None:
+    """Install ``feature`` only when ``module`` is not already importable.
+
+    Distribution metadata can be absent for a vendored module, a ``PYTHONPATH``
+    entry, or a test double in ``sys.modules``.  Those are valid import sources;
+    the lazy-install policy only needs to run when the actual import would fail.
+    """
+    if module in sys.modules:
+        return
+    try:
+        if importlib.util.find_spec(module) is not None:
+            return
+    except (ImportError, ValueError):
+        pass
+    ensure(feature, prompt=False)
 
 
 def is_available(feature: str) -> bool:

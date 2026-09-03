@@ -52,9 +52,9 @@ def _ensure_parallel_sdk_installed() -> None:
     raises ImportError that the caller can handle.
     """
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
+        from tools.lazy_deps import ensure_importable
 
-        _lazy_ensure("search.parallel", prompt=False)
+        ensure_importable("search.parallel", "parallel")
     except ImportError:
         pass
     except Exception as exc:  # noqa: BLE001 — surface install hint as ImportError

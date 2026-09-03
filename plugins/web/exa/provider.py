@@ -61,9 +61,9 @@ def _get_exa_client() -> Any:
         )
 
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
+        from tools.lazy_deps import ensure_importable
 
-        _lazy_ensure("search.exa", prompt=False)
+        ensure_importable("search.exa", "exa_py")
     except ImportError:
         pass
     except Exception as exc:  # noqa: BLE001 — lazy_deps surfaces install hints
