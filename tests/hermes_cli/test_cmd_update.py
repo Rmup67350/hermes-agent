@@ -87,6 +87,19 @@ def _patch_gateway_discovery():
     with patch("hermes_cli.main._purge_stale_hermes_modules", return_value=None), \
          patch("hermes_cli.main._run_pre_update_backup", return_value=None), \
          patch(
+             "hermes_cli.main._install_python_dependencies_with_optional_fallback",
+             return_value=None,
+         ), \
+         patch("hermes_cli.main._verify_core_dependencies_installed", return_value=None), \
+         patch("hermes_cli.main._verify_console_scripts_installed", return_value=None), \
+         patch("hermes_cli.main._refresh_active_lazy_features", return_value=True), \
+         patch("hermes_cli.main._restore_active_tool_dependencies", return_value=None), \
+         patch(
+             "hermes_cli.main._refresh_active_memory_provider_dependencies",
+             return_value=None,
+         ), \
+         patch("hermes_cli.main._upgrade_pip_before_lazy_refresh", return_value=None), \
+         patch(
              "hermes_cli.update_cmd._restart_macos_launchd_gateways",
              return_value=None,
          ), \
