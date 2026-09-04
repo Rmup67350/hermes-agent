@@ -73,19 +73,32 @@ def _patch_managed_uv(request):
 
 @pytest.fixture(autouse=True)
 def _patch_gateway_discovery():
-    """Keep cmd_update's gateway auto-restart phase off this machine's gateways.
+    """Keep cmd_update tests fully isolated from this machine's runtime.
 
-    The restart phase used to swallow every exception at debug level, so these
-    end-to-end tests never noticed it touching real gateway discovery. Since
-    the phase is surfaced (#78574: an aborted restart now fails the update),
-    an unmocked ``find_gateway_pids`` on a box with a live gateway reaches the
-    conftest live-system guard and turns into a spurious ``sys.exit(1)``.
-    Discovery returning nothing makes the phase a clean no-op for every test
-    in this module (none of them assert on gateway restarts).
+    These tests exercise update control flow, not host backup or gateway
+    lifecycle.  The production updater purges stale ``hermes_cli`` modules
+    after a pull; without neutralising that purge, freshly imported gateway
+    helpers lose the mocks below and can discover/restart real launchd units.
+    Keep both the discovery functions and the macOS restart primitive blocked
+    so a regression in one layer cannot mutate the developer's live fleet.
     """
-    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
+    from hermes_cli.update_inventory import UpdatePlan
+
+    with patch("hermes_cli.main._purge_stale_hermes_modules", return_value=None), \
+         patch("hermes_cli.main._run_pre_update_backup", return_value=None), \
+         patch(
+             "hermes_cli.update_cmd._restart_macos_launchd_gateways",
+             return_value=None,
+         ), \
+         patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
-         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]):
+         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
+         patch("hermes_cli.gateway._get_service_pids", return_value=set()), \
+         patch(
+             "hermes_cli.update_inventory.collect_runtime_inventory",
+             return_value=UpdatePlan(),
+         ), \
+         patch("hermes_cli.update_receipt.collect_fleet_versions", return_value=[]):
         yield
 
 
