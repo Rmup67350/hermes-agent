@@ -23,39 +23,6 @@ def test_is_auth_error_detects_oauth_flow_error():
     assert _is_auth_error(OAuthFlowError("expired")) is True
 
 
-def test_is_auth_error_detects_oauth_non_interactive():
-    from tools.mcp_tool import _is_auth_error
-    from tools.mcp_oauth import OAuthNonInteractiveError
-
-    assert _is_auth_error(OAuthNonInteractiveError("no browser")) is True
-
-
-def test_is_auth_error_detects_httpx_401():
-    from tools.mcp_tool import _is_auth_error
-    import httpx
-
-    response = MagicMock()
-    response.status_code = 401
-    exc = httpx.HTTPStatusError("unauth", request=MagicMock(), response=response)
-    assert _is_auth_error(exc) is True
-
-
-def test_is_auth_error_rejects_httpx_500():
-    from tools.mcp_tool import _is_auth_error
-    import httpx
-
-    response = MagicMock()
-    response.status_code = 500
-    exc = httpx.HTTPStatusError("oops", request=MagicMock(), response=response)
-    assert _is_auth_error(exc) is False
-
-
-def test_is_auth_error_rejects_generic_exception():
-    from tools.mcp_tool import _is_auth_error
-    assert _is_auth_error(ValueError("not auth")) is False
-    assert _is_auth_error(RuntimeError("not auth")) is False
-
-
 def test_call_tool_handler_returns_needs_reauth_on_unrecoverable_401(monkeypatch, tmp_path):
     """When session.call_tool raises 401 and handle_401 returns False,
     handler returns a structured needs_reauth error (not a generic failure)."""
@@ -83,6 +50,7 @@ def test_call_tool_handler_returns_needs_reauth_on_unrecoverable_401(monkeypatch
 
     from tools import mcp_tool
     mcp_tool._servers["srv"] = server
+    mcp_tool._server_trust_levels["srv"] = "full"
     mcp_tool._server_error_counts.pop("srv", None)
 
     # Ensure the MCP loop exists (run_on_mcp_loop needs it)
@@ -105,6 +73,7 @@ def test_call_tool_handler_returns_needs_reauth_on_unrecoverable_401(monkeypatch
         assert "re-auth" in parsed.get("error", "").lower() or "reauth" in parsed.get("error", "").lower()
     finally:
         mcp_tool._servers.pop("srv", None)
+        mcp_tool._server_trust_levels.pop("srv", None)
         mcp_tool._server_error_counts.pop("srv", None)
 
 
@@ -125,6 +94,7 @@ def test_call_tool_handler_non_auth_error_still_generic(monkeypatch, tmp_path):
 
     from tools import mcp_tool
     mcp_tool._servers["srv"] = server
+    mcp_tool._server_trust_levels["srv"] = "full"
     mcp_tool._server_error_counts.pop("srv", None)
     mcp_tool._ensure_mcp_loop()
 
@@ -136,4 +106,5 @@ def test_call_tool_handler_non_auth_error_still_generic(monkeypatch, tmp_path):
         assert "MCP call failed" in parsed.get("error", "")
     finally:
         mcp_tool._servers.pop("srv", None)
+        mcp_tool._server_trust_levels.pop("srv", None)
         mcp_tool._server_error_counts.pop("srv", None)

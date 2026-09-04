@@ -30,6 +30,30 @@ from gateway.platforms.base import (
     SendResult,
 )
 
+from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import get_secret as _scoped_get_secret
+
+
+def _get_scoped_secret(name, default=None):
+    """Scope-aware credential read with the default-profile startup fallback.
+
+    Secondary profiles construct their adapters under a profile secret
+    scope -- the scope is authoritative and a scoped miss returns ``default``
+    (no cross-profile borrow from ``os.environ``, which may hold another
+    profile's value). The DEFAULT profile's adapter constructs and sends
+    *unscoped* under multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash this path; there ``os.environ`` is that
+    profile's own value, so fall back to it. Same pattern as the Slack
+    ``SLACK_APP_TOKEN`` read (#59739) and
+    ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
+    """
+    try:
+        val = _scoped_get_secret(name, default)
+    except _UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
+
 logger = logging.getLogger(__name__)
 
 # Mattermost post size limit (server default is 16383, but 4000 is the
@@ -75,7 +99,7 @@ def check_mattermost_requirements() -> bool:
 def validate_mattermost_config(config: PlatformConfig) -> bool:
     """Return True when Mattermost has enough config to connect."""
     extra = getattr(config, "extra", {}) or {}
-    token = (getattr(config, "token", None) or os.getenv("MATTERMOST_TOKEN", "")).strip()
+    token = (getattr(config, "token", None) or _get_scoped_secret("MATTERMOST_TOKEN", "")).strip()
     url = (extra.get("url", "") or os.getenv("MATTERMOST_URL", "")).strip()
     if not token:
         logger.debug("Mattermost: MATTERMOST_TOKEN not set")
@@ -98,7 +122,7 @@ class MattermostAdapter(BasePlatformAdapter):
             config.extra.get("url", "")
             or os.getenv("MATTERMOST_URL", "")
         ).rstrip("/")
-        self._token: str = config.token or os.getenv("MATTERMOST_TOKEN", "")
+        self._token: str = config.token or _get_scoped_secret("MATTERMOST_TOKEN", "")
 
         self._bot_user_id: str = ""
         self._bot_username: str = ""
@@ -315,6 +339,8 @@ class MattermostAdapter(BasePlatformAdapter):
         # Start WebSocket in background.
         self._ws_task = asyncio.create_task(self._ws_loop())
         self._mark_connected()
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:
@@ -727,12 +753,23 @@ class MattermostAdapter(BasePlatformAdapter):
                 # Detect permanent auth/permission failures that will never
                 # succeed on retry — stop reconnecting instead of looping forever.
                 import aiohttp
-                err_str = str(exc).lower()
                 if isinstance(exc, aiohttp.WSServerHandshakeError) and exc.status in {401, 403}:
                     logger.error("Mattermost WS auth failed (HTTP %d) — stopping reconnect", exc.status)
-                    return
-                if "401" in err_str or "403" in err_str or "unauthorized" in err_str:
-                    logger.error("Mattermost WS permanent error: %s — stopping reconnect", exc)
+                    # Escalate through the fatal-error hook instead of a bare
+                    # return: the old silent exit left _running True, so
+                    # is_connected() kept reporting healthy while the listener
+                    # was dead and the gateway was never told (OOF-156 class).
+                    # Type-based only — the substring fallback that used to sit
+                    # below this branch misclassified transient errors whose
+                    # message merely contained "401" (#80489).
+                    self._set_fatal_error(
+                        "mattermost_auth_error",
+                        f"Mattermost WebSocket authentication rejected (HTTP {exc.status}). "
+                        "The bot token is invalid, revoked, or lacks permission — check "
+                        "MATTERMOST_TOKEN and the bot account in the System Console.",
+                        retryable=False,
+                    )
+                    await self._notify_fatal_error()
                     return
                 logger.warning("Mattermost WS error: %s — reconnecting in %.0fs", exc, delay)
 
@@ -1022,7 +1059,7 @@ async def _standalone_send(
         (getattr(pconfig, "extra", {}) or {}).get("url")
         or os.getenv("MATTERMOST_URL", "")
     ).rstrip("/")
-    token = (getattr(pconfig, "token", None) or os.getenv("MATTERMOST_TOKEN", "")).strip()
+    token = (getattr(pconfig, "token", None) or _get_scoped_secret("MATTERMOST_TOKEN", "")).strip()
     if not base_url or not token:
         return {
             "error": (
@@ -1136,7 +1173,7 @@ def interactive_setup() -> None:
     ``hermes_cli/setup.py::_setup_mattermost`` function this migration
     removes.
     """
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.cli_output import (
         prompt,
         prompt_yes_no,
@@ -1181,9 +1218,12 @@ def interactive_setup() -> None:
     print_info("📬 Home Channel: where Hermes delivers cron job results and notifications.")
     print_info("   To get a channel ID: click channel name → View Info → copy the ID")
     print_info("   You can also set this later by typing /set-home in a Mattermost channel.")
-    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)").strip()
     if home_channel:
         save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
+    else:
+        if remove_env_value("MATTERMOST_HOME_CHANNEL"):
+            print_info("Home channel cleared.")
     print_info("   Open config in your editor:  hermes config edit")
 
 

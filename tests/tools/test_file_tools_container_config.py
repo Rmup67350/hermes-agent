@@ -59,6 +59,13 @@ class TestFileToolsContainerConfig:
         cc = self._run(_make_env_config(docker_forward_env=["MY_SECRET"]), "t2").get("container_config", {})
         assert cc.get("docker_forward_env") == ["MY_SECRET"]
 
+    def test_docker_workspace_only_passed(self):
+        """docker_workspace_only is forwarded to the shared file environment."""
+        cc = self._run(_make_env_config(docker_workspace_only=True), "workspace-only").get(
+            "container_config", {}
+        )
+        assert cc.get("docker_workspace_only") is True
+
     def test_docker_mount_cwd_defaults_to_false(self):
         """docker_mount_cwd_to_workspace defaults to False when absent from config."""
         cfg = _make_env_config()

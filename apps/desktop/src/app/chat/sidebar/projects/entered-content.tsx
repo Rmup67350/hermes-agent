@@ -2,19 +2,12 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useMemo, useState } from 'react'
 
-import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { displayPath } from '@/lib/display-path'
 import { $dismissedWorktreeIds, dismissWorktree, setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { removeWorktreePath } from '@/store/projects'
@@ -53,6 +46,12 @@ export function EnteredProjectContent({
 }) {
   if (!project.repos.length) {
     return null
+  }
+
+  // Home's rows aren't anchored to a folder, so there's no repo or worktree
+  // structure to show — just the chats.
+  if (project.isNoProject) {
+    return <>{renderRows(project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions)))}</>
   }
 
   const single = project.repos.length === 1
@@ -133,8 +132,6 @@ function RepoFlatSection({
       group.isMain || !dismissedWorktrees.includes(group.id) || (group.path && discoveredWorktreePaths.has(group.path))
   )
 
-  const repoCount = ordered.reduce((sum, group) => sum + group.sessions.length, 0)
-
   // Removal asks how: actually `git worktree remove` it, or just hide the lane
   // and leave the worktree on disk. A dirty worktree escalates to a force prompt
   // instead of erroring (those changes are usually throwaway).
@@ -185,43 +182,26 @@ function RepoFlatSection({
     destructiveLabel: string,
     onDestructive: (group: SidebarSessionGroup) => void
   ) => (
-    <Dialog onOpenChange={isOpen => !isOpen && setTarget(null)} open={Boolean(target)}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{`${s.projects.removeWorktree} "${target?.label ?? ''}"?`}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button onClick={() => setTarget(null)} variant="ghost">
-            {t.common.cancel}
-          </Button>
-          <Button
-            onClick={() => {
-              if (target) {
-                dismissWorktree(target.id)
-              }
-
-              setTarget(null)
-            }}
-            variant="secondary"
-          >
-            {s.projects.removeFromSidebar}
-          </Button>
-          <Button
-            onClick={() => {
-              setTarget(null)
-
-              if (target) {
-                onDestructive(target)
-              }
-            }}
-            variant="destructive"
-          >
-            {destructiveLabel}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ConfirmDialog
+      confirmLabel={destructiveLabel}
+      description={description}
+      destructive
+      // removeViaGit finishes on its own: it either dismisses the lane, escalates
+      // to the force prompt, or toasts. Nothing left for the dialog to wait on.
+      dismissOnConfirm
+      onClose={() => setTarget(null)}
+      onConfirm={() => {
+        if (target) {
+          onDestructive(target)
+        }
+      }}
+      open={Boolean(target)}
+      secondaryAction={{
+        label: s.projects.removeFromSidebar,
+        onClick: () => target && dismissWorktree(target.id)
+      }}
+      title={`${s.projects.removeWorktree} "${target?.label ?? ''}"?`}
+    />
   )
 
   const removeDialog = (
@@ -268,13 +248,12 @@ function RepoFlatSection({
             />
           )
         }
-        count={repoCount}
         emphasis
         icon={<Codicon className="shrink-0 text-(--ui-text-tertiary)" name="repo" size="0.75rem" />}
         label={repo.label}
         onToggle={toggleOpen}
         open={open}
-        title={repo.path ?? undefined}
+        title={repo.path ? displayPath(repo.path) : undefined}
       />
       {open && <SidebarRowStack className="pl-2.5">{body}</SidebarRowStack>}
       {removeDialog}

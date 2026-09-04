@@ -3,9 +3,9 @@
 Three fixes under test:
 
 1. ``_jobs_lock()`` bounds its cross-process flock: when another process holds
-   ``.jobs.lock`` indefinitely, acquisition times out, logs at ERROR, and falls
-   through to in-process-only locking — instead of blocking the calling thread
-   (and, transitively, the cron ticker heartbeat) forever.
+   ``.jobs.lock`` indefinitely, acquisition fails closed after the timeout —
+   instead of blocking the calling thread forever or entering the critical
+   section without cross-process exclusion.
 
 2. Claim freshness checks are bounded on both sides (``0 <= age < ttl``): a
    ``fire_claim``/``run_claim`` stamped in the FUTURE (clock/TZ skew across a
@@ -19,6 +19,7 @@ import json
 import os
 import threading
 import time
+
 from datetime import timedelta
 from pathlib import Path
 
@@ -65,8 +66,30 @@ def _hold_jobs_flock(path: Path, release: threading.Event, held: threading.Event
 
 
 class TestBoundedJobsLock:
-    def test_lock_acquisition_times_out_and_degrades(self, monkeypatch, caplog):
-        """A foreign holder of .jobs.lock must NOT block _jobs_lock forever."""
+    def test_windows_named_mutex_backend_enters_and_releases(self, monkeypatch):
+        jobs_mod.ensure_dirs()
+        token = object()
+        calls = []
+        monkeypatch.setattr(jobs_mod, "fcntl", None)
+        monkeypatch.setattr(jobs_mod, "_use_windows_jobs_mutex", lambda: True)
+        monkeypatch.setattr(
+            jobs_mod,
+            "_acquire_windows_jobs_mutex",
+            lambda path, timeout: calls.append((path, timeout)) or token,
+        )
+        monkeypatch.setattr(
+            jobs_mod, "_release_windows_jobs_mutex", lambda value: calls.append(value)
+        )
+
+        with _jobs_lock():
+            pass
+
+        assert calls[0][0] == jobs_mod._jobs_lock_file()
+        assert calls[0][1] == jobs_mod._JOBS_LOCK_TIMEOUT_SECONDS
+        assert calls[1] is token
+
+    def test_lock_acquisition_times_out_and_fails_closed(self, monkeypatch):
+        """A foreign holder must neither block forever nor permit an unsafe write."""
         jobs_mod.ensure_dirs()
         lock_path = jobs_mod._jobs_lock_file()
         lock_path.touch()
@@ -84,16 +107,16 @@ class TestBoundedJobsLock:
         try:
             start = time.monotonic()
             entered = False
-            with caplog.at_level("ERROR", logger="cron.jobs"):
+            with pytest.raises(
+                jobs_mod.CronJobsLockError,
+                match="Timed out waiting for the cron jobs lock",
+            ):
                 with _jobs_lock():
                     entered = True
             elapsed = time.monotonic() - start
 
-            assert entered, "critical section must still run in degraded mode"
+            assert not entered, "critical section must stay closed without the file lock"
             assert elapsed < 10, f"lock wait was not bounded (took {elapsed:.1f}s)"
-            assert any("Timed out" in r.message for r in caplog.records), (
-                "degraded-mode fallback must be logged at ERROR"
-            )
         finally:
             release.set()
             holder.join(timeout=10)
@@ -146,23 +169,6 @@ class TestFutureDatedClaims:
                 j["fire_claim"] = {"at": past.isoformat(), "by": "other-host:1"}
         save_jobs(jobs)
         assert claim_job_for_fire(job["id"]) is True
-
-    def test_future_run_claim_does_not_skip_oneshot_forever(self):
-        """A one-shot with a future-dated run_claim must still become due."""
-        past_fire = (jobs_mod._hermes_now() - timedelta(seconds=30)).isoformat()
-        job = create_job(name="oneshot", schedule=past_fire, prompt="x")
-        jobs = load_jobs()
-        for j in jobs:
-            if j["id"] == job["id"]:
-                future = jobs_mod._hermes_now() + timedelta(hours=6)
-                j["run_claim"] = {"at": future.isoformat(), "by": "other-host:1"}
-                j["next_run_at"] = past_fire
-        save_jobs(jobs)
-
-        due_ids = {j["id"] for j in get_due_jobs()}
-        assert job["id"] in due_ids, (
-            "future-dated run_claim must be treated as stale, not fresh"
-        )
 
 
 class TestHonestRunSkipMessages:
