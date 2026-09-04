@@ -22,9 +22,8 @@ import stat
 import uuid
 
 # Cross-process advisory file locking for jobs.json critical sections.
-# fcntl is Unix-only; on Windows fall back to msvcrt. Either may be absent,
-# in which case _jobs_lock() degrades to in-process locking only (the old
-# behaviour) rather than failing.
+# fcntl is Unix-only; on Windows use msvcrt. If neither backend is available,
+# mutations fail closed rather than silently dropping cross-process exclusion.
 try:
     import fcntl
 except ImportError:  # pragma: no cover - non-Unix
@@ -347,17 +346,38 @@ def _open_jobs_lock_fd(lock_path: Path) -> int:
         raise
 
 
-def _open_windows_jobs_lock_file(lock_path: Path):
-    """Open a Windows lock file while rejecting symlink/reparse ambiguity."""
+def _reject_windows_reparse_points(
+    lock_path: Path, *, allow_missing_leaf: bool
+) -> None:
+    """Reject every junction/symlink/reparse component in a Windows lock path."""
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
     absolute = lock_path.absolute()
     cumulative = Path(absolute.anchor)
-    for part in absolute.parts[1:]:
+    parts = absolute.parts[1:]
+    for index, part in enumerate(parts):
         cumulative = cumulative / part
-        if cumulative.is_symlink():
-            raise CronJobsLockError("cron jobs lock path contains a symlink")
+        try:
+            component_stat = os.lstat(cumulative)
+        except FileNotFoundError:
+            if allow_missing_leaf and index == len(parts) - 1:
+                return
+            raise CronJobsLockError(
+                f"cron jobs lock path component is unavailable: {cumulative}"
+            )
+        attributes = getattr(component_stat, "st_file_attributes", 0)
+        if stat.S_ISLNK(component_stat.st_mode) or attributes & reparse_flag:
+            raise CronJobsLockError(
+                f"cron jobs lock path contains a reparse point: {cumulative}"
+            )
+
+
+def _open_windows_jobs_lock_file(lock_path: Path):
+    """Open a Windows lock file while rejecting symlink/reparse ambiguity."""
+    _reject_windows_reparse_points(lock_path, allow_missing_leaf=True)
     handle = None
     try:
         handle = open(lock_path, "a+b")
+        _reject_windows_reparse_points(lock_path, allow_missing_leaf=False)
         if os.fstat(handle.fileno()).st_size == 0:
             handle.write(b"\0")
             handle.flush()

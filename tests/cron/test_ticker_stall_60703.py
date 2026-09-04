@@ -66,6 +66,18 @@ def _hold_jobs_flock(path: Path, release: threading.Event, held: threading.Event
 
 
 class TestBoundedJobsLock:
+    def test_windows_reparse_attribute_is_rejected_before_open(self, monkeypatch):
+        fake_stat = SimpleNamespace(
+            st_mode=0o040755,
+            st_file_attributes=0x400,
+        )
+        monkeypatch.setattr(jobs_mod.os, "lstat", lambda _path: fake_stat)
+
+        with pytest.raises(jobs_mod.CronJobsLockError, match="reparse point"):
+            jobs_mod._reject_windows_reparse_points(
+                Path("/cron/.jobs.lock"), allow_missing_leaf=False
+            )
+
     def test_msvcrt_backend_enters_and_releases_when_fcntl_is_unavailable(
         self, monkeypatch
     ):
