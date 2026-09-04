@@ -51,6 +51,7 @@ def _install_stub_server(mcp_tool_module, name: str, call_tool_impl,
     server._stdio_children_dead = children_dead
 
     mcp_tool_module._servers[name] = server
+    mcp_tool_module._server_trust_levels[name] = "full"
     mcp_tool_module._server_error_counts.pop(name, None)
     if hasattr(mcp_tool_module, "_server_breaker_opened_at"):
         mcp_tool_module._server_breaker_opened_at.pop(name, None)

@@ -147,6 +147,9 @@ def test_direct_session_db_flushes_share_marker_claim(agent):
                 self.rows.append(m["content"])
             return list(range(1, len(messages) + 1))
 
+        def flush_token_counts(self):
+            return None
+
     db = _BarrierDB()
     agent._session_db = db
     agent._session_db_created = True
@@ -1386,6 +1389,7 @@ class TestEnvironmentProbeIntegration:
         """When the probe finds something off, the line lands in the prompt."""
         from tools import env_probe
         env_probe._reset_cache_for_tests()
+        monkeypatch.setattr(env_probe, "external_probes_disabled", lambda: False)
         monkeypatch.setattr(env_probe, "_python_version_of",
                             lambda b: {"python3": "3.11.15"}.get(b))
         monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: False)
@@ -1403,6 +1407,7 @@ class TestEnvironmentProbeIntegration:
         """Clean environment → probe emits nothing → no line in prompt."""
         from tools import env_probe
         env_probe._reset_cache_for_tests()
+        monkeypatch.setattr(env_probe, "external_probes_disabled", lambda: False)
         monkeypatch.setattr(env_probe, "_python_version_of",
                             lambda b: "3.13.3" if b == "python3" else None)
         monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: True)
@@ -1418,6 +1423,7 @@ class TestEnvironmentProbeIntegration:
         """Even with detectable problems, the probe stays out when disabled."""
         from tools import env_probe
         env_probe._reset_cache_for_tests()
+        monkeypatch.setattr(env_probe, "external_probes_disabled", lambda: False)
         monkeypatch.setattr(env_probe, "_python_version_of",
                             lambda b: {"python3": "3.11.15"}.get(b))
         monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: False)

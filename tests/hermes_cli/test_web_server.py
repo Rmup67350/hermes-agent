@@ -2665,15 +2665,18 @@ class TestNewEndpoints:
             "headers": {
                 "Authorization": "Bearer ${MCP_BEARER_SERVER_API_KEY}",
             },
+            "trust": "untrusted",
         }
         assert servers["oauth-server"] == {
             "url": "https://example.com/oauth-mcp",
             "auth": "oauth",
+            "trust": "untrusted",
         }
         assert servers["local-server"] == {
             "command": "uvx",
             "args": ["mcp-server", "--debug"],
             "env": {"API_KEY": "stdio-secret"},
+            "trust": "untrusted",
         }
 
         assert secret not in config_text

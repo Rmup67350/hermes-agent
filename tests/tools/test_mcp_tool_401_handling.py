@@ -50,6 +50,7 @@ def test_call_tool_handler_returns_needs_reauth_on_unrecoverable_401(monkeypatch
 
     from tools import mcp_tool
     mcp_tool._servers["srv"] = server
+    mcp_tool._server_trust_levels["srv"] = "full"
     mcp_tool._server_error_counts.pop("srv", None)
 
     # Ensure the MCP loop exists (run_on_mcp_loop needs it)
@@ -72,6 +73,7 @@ def test_call_tool_handler_returns_needs_reauth_on_unrecoverable_401(monkeypatch
         assert "re-auth" in parsed.get("error", "").lower() or "reauth" in parsed.get("error", "").lower()
     finally:
         mcp_tool._servers.pop("srv", None)
+        mcp_tool._server_trust_levels.pop("srv", None)
         mcp_tool._server_error_counts.pop("srv", None)
 
 
@@ -92,6 +94,7 @@ def test_call_tool_handler_non_auth_error_still_generic(monkeypatch, tmp_path):
 
     from tools import mcp_tool
     mcp_tool._servers["srv"] = server
+    mcp_tool._server_trust_levels["srv"] = "full"
     mcp_tool._server_error_counts.pop("srv", None)
     mcp_tool._ensure_mcp_loop()
 
@@ -103,4 +106,5 @@ def test_call_tool_handler_non_auth_error_still_generic(monkeypatch, tmp_path):
         assert "MCP call failed" in parsed.get("error", "")
     finally:
         mcp_tool._servers.pop("srv", None)
+        mcp_tool._server_trust_levels.pop("srv", None)
         mcp_tool._server_error_counts.pop("srv", None)

@@ -1213,17 +1213,24 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
         future = int(time.time()) + 3600
         killed: list[int] = []
         state = {"alive": True}
+        process_start_time = "Fri Sep  4 12:00:00 2026"
 
         def _signal(pid, sig):
             killed.append(sig)
             if sig == signal.SIGTERM:
                 state["alive"] = False
 
-        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: state["alive"])
+        monkeypatch.setattr(
+            _kb,
+            "_worker_identity_state",
+            lambda _pid, observed: (
+                "alive" if observed == process_start_time and state["alive"] else "dead"
+            ),
+        )
         conn.execute(
             "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
-            "worker_pid=? WHERE id=?",
-            (lock, future, 12345, t),
+            "worker_pid=?, worker_start_time=? WHERE id=?",
+            (lock, future, 12345, process_start_time, t),
         )
         conn.execute(
             "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "

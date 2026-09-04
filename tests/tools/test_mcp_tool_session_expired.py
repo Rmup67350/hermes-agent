@@ -76,6 +76,7 @@ def _install_stub_server(name: str = "wpcom"):
     from tools import mcp_tool
 
     mcp_tool._ensure_mcp_loop()
+    mcp_tool._server_trust_levels[name] = "full"
 
     server = MagicMock()
     server.name = name
@@ -130,8 +131,8 @@ def _install_stub_server(name: str = "wpcom"):
 @pytest.mark.parametrize(
     "transport_config, expected_route",
     [
-        ({"command": "librarian-mcp"}, "stdio"),
-        ({"url": "https://neo4j.example.test/mcp", "skip_preflight": True}, "http"),
+        ({"command": "librarian-mcp", "trust": "full"}, "stdio"),
+        ({"url": "https://neo4j.example.test/mcp", "skip_preflight": True, "trust": "full"}, "http"),
     ],
     ids=["stdio", "http"],
 )
@@ -180,6 +181,7 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
 
     server = _LifecycleTask("resumed")
     mcp_tool._servers["resumed"] = server
+    mcp_tool._server_trust_levels["resumed"] = "full"
     mcp_tool._server_error_counts.pop("resumed", None)
     mcp_tool._server_breaker_opened_at.pop("resumed", None)
     loop = mcp_tool._mcp_loop
@@ -203,6 +205,7 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
         loop.call_soon_threadsafe(server._shutdown_event.set)
         run_future.result(timeout=5)
         mcp_tool._servers.pop("resumed", None)
+        mcp_tool._server_trust_levels.pop("resumed", None)
         mcp_tool._server_error_counts.pop("resumed", None)
         mcp_tool._server_breaker_opened_at.pop("resumed", None)
 
@@ -263,6 +266,7 @@ def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
 
     server._reconnect_event = _ReconnectAdapter()
     mcp_tool._servers["hindsight"] = server
+    mcp_tool._server_trust_levels["hindsight"] = "full"
     mcp_tool._server_error_counts["hindsight"] = 7
     # Stamp the breaker "open" far enough in the past that the cooldown has
     # provably elapsed, so this call is a half-open probe. The breaker compares
@@ -281,6 +285,7 @@ def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
         assert "hindsight" not in mcp_tool._server_breaker_opened_at
     finally:
         mcp_tool._servers.pop("hindsight", None)
+        mcp_tool._server_trust_levels.pop("hindsight", None)
         mcp_tool._server_error_counts.pop("hindsight", None)
         mcp_tool._server_breaker_opened_at.pop("hindsight", None)
 

@@ -74,7 +74,7 @@ def test_initial_connect_failure_is_registry_owned_and_reaped(monkeypatch, tmp_p
 
     try:
         assert mcp_tool.register_mcp_servers({
-            "initial-failure": {"command": "unused", "connect_timeout": 5}
+            "initial-failure": {"command": "unused", "connect_timeout": 5, "trust": "full"}
         }) == []
 
         assert len(created) == 1
@@ -160,7 +160,7 @@ def test_initial_connect_failure_revives_same_registered_server(monkeypatch, tmp
     monkeypatch.setattr(registry_module, "registry", mock_registry)
 
     config = {
-        "recovering": {"command": "unused", "connect_timeout": 5}
+        "recovering": {"command": "unused", "connect_timeout": 5, "trust": "full"}
     }
 
     try:

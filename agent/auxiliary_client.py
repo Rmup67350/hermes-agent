@@ -7445,6 +7445,8 @@ _VISION_AUTO_PROVIDER_ORDER = (
     "deepinfra",
 )
 
+_KNOWN_TEXT_ONLY_VISION_PROVIDERS = frozenset({"deepseek"})
+
 
 def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
     """Return True when ``provider``/``model`` is known to accept image input.
@@ -7470,6 +7472,8 @@ def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
     except Exception:  # pragma: no cover - defensive
         return True
     if supports is None:
+        if _normalize_aux_provider(provider) in _KNOWN_TEXT_ONLY_VISION_PROVIDERS:
+            return False
         # No capability data — keep current behaviour and let the call attempt
         # happen rather than silently skipping. This avoids false-positive
         # skips for new/custom providers.
