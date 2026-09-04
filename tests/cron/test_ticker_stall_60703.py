@@ -19,7 +19,7 @@ import json
 import os
 import threading
 import time
-from types import SimpleNamespace
+
 from datetime import timedelta
 from pathlib import Path
 
@@ -66,36 +66,27 @@ def _hold_jobs_flock(path: Path, release: threading.Event, held: threading.Event
 
 
 class TestBoundedJobsLock:
-    def test_windows_reparse_attribute_is_rejected_before_open(self, monkeypatch):
-        fake_stat = SimpleNamespace(
-            st_mode=0o040755,
-            st_file_attributes=0x400,
-        )
-        monkeypatch.setattr(jobs_mod.os, "lstat", lambda _path: fake_stat)
-
-        with pytest.raises(jobs_mod.CronJobsLockError, match="reparse point"):
-            jobs_mod._reject_windows_reparse_points(
-                Path("/cron/.jobs.lock"), allow_missing_leaf=False
-            )
-
-    def test_msvcrt_backend_enters_and_releases_when_fcntl_is_unavailable(
-        self, monkeypatch
-    ):
+    def test_windows_named_mutex_backend_enters_and_releases(self, monkeypatch):
         jobs_mod.ensure_dirs()
+        token = object()
         calls = []
-
-        def locking(fd, mode, length):
-            calls.append((fd, mode, length))
-
-        fake_msvcrt = SimpleNamespace(LK_NBLCK=1, LK_UNLCK=2, locking=locking)
         monkeypatch.setattr(jobs_mod, "fcntl", None)
-        monkeypatch.setattr(jobs_mod, "msvcrt", fake_msvcrt)
+        monkeypatch.setattr(jobs_mod, "_use_windows_jobs_mutex", lambda: True)
+        monkeypatch.setattr(
+            jobs_mod,
+            "_acquire_windows_jobs_mutex",
+            lambda path, timeout: calls.append((path, timeout)) or token,
+        )
+        monkeypatch.setattr(
+            jobs_mod, "_release_windows_jobs_mutex", lambda value: calls.append(value)
+        )
 
         with _jobs_lock():
             pass
 
-        assert [mode for _fd, mode, _length in calls] == [1, 2]
-        assert all(length == 1 for _fd, _mode, length in calls)
+        assert calls[0][0] == jobs_mod._jobs_lock_file()
+        assert calls[0][1] == jobs_mod._JOBS_LOCK_TIMEOUT_SECONDS
+        assert calls[1] is token
 
     def test_lock_acquisition_times_out_and_fails_closed(self, monkeypatch):
         """A foreign holder must neither block forever nor permit an unsafe write."""

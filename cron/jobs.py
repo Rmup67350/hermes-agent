@@ -7,6 +7,7 @@ Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 
 import contextlib
 import copy
+import hashlib
 from contextvars import ContextVar
 from dataclasses import dataclass
 import errno
@@ -22,8 +23,8 @@ import stat
 import uuid
 
 # Cross-process advisory file locking for jobs.json critical sections.
-# fcntl is Unix-only; on Windows use msvcrt. If neither backend is available,
-# mutations fail closed rather than silently dropping cross-process exclusion.
+# fcntl is Unix-only; Windows uses a kernel named mutex. If neither backend is
+# available, mutations fail closed rather than dropping cross-process exclusion.
 try:
     import fcntl
 except ImportError:  # pragma: no cover - non-Unix
@@ -346,53 +347,53 @@ def _open_jobs_lock_fd(lock_path: Path) -> int:
         raise
 
 
-def _reject_windows_reparse_points(
-    lock_path: Path, *, allow_missing_leaf: bool
-) -> None:
-    """Reject every junction/symlink/reparse component in a Windows lock path."""
-    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-    absolute = lock_path.absolute()
-    cumulative = Path(absolute.anchor)
-    parts = absolute.parts[1:]
-    for index, part in enumerate(parts):
-        cumulative = cumulative / part
-        try:
-            component_stat = os.lstat(cumulative)
-        except FileNotFoundError:
-            if allow_missing_leaf and index == len(parts) - 1:
-                return
-            raise CronJobsLockError(
-                f"cron jobs lock path component is unavailable: {cumulative}"
-            )
-        attributes = getattr(component_stat, "st_file_attributes", 0)
-        if stat.S_ISLNK(component_stat.st_mode) or attributes & reparse_flag:
-            raise CronJobsLockError(
-                f"cron jobs lock path contains a reparse point: {cumulative}"
-            )
+def _windows_jobs_mutex_name(lock_path: Path) -> str:
+    """Derive one stable, non-secret kernel object name for this jobs store."""
+    identity = os.path.normcase(os.path.abspath(str(lock_path)))
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return f"Local\\HermesCronJobs-{digest}"
 
 
-def _open_windows_jobs_lock_file(lock_path: Path):
-    """Open a Windows lock file while rejecting symlink/reparse ambiguity."""
-    _reject_windows_reparse_points(lock_path, allow_missing_leaf=True)
-    handle = None
+def _use_windows_jobs_mutex() -> bool:
+    return os.name == "nt"
+
+
+def _acquire_windows_jobs_mutex(lock_path: Path, timeout_seconds: float):
+    """Acquire a Windows kernel mutex without opening a filesystem lock path."""
     try:
-        handle = open(lock_path, "a+b")
-        _reject_windows_reparse_points(lock_path, allow_missing_leaf=False)
-        if os.fstat(handle.fileno()).st_size == 0:
-            handle.write(b"\0")
-            handle.flush()
-            os.fsync(handle.fileno())
-        fd_stat = os.fstat(handle.fileno())
-        path_stat = os.stat(lock_path, follow_symlinks=False)
-        if not stat.S_ISREG(fd_stat.st_mode) or fd_stat.st_nlink != 1:
-            raise CronJobsLockError("cron jobs lock is not a regular single-link file")
-        if (fd_stat.st_dev, fd_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino):
-            raise CronJobsLockError("cron jobs lock path changed during acquisition")
-        return handle
-    except BaseException:
-        if handle is not None:
-            handle.close()
-        raise
+        import ctypes
+
+        kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+        kernel32.ReleaseMutex.argtypes = [ctypes.c_void_p]
+        kernel32.ReleaseMutex.restype = ctypes.c_bool
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_bool
+    except (AttributeError, ImportError, OSError) as exc:
+        raise CronJobsLockError("secure Windows cron jobs mutex is unavailable") from exc
+
+    handle = kernel32.CreateMutexW(None, False, _windows_jobs_mutex_name(lock_path))
+    if not handle:
+        raise CronJobsLockError("Windows cron jobs mutex creation failed")
+    timeout_ms = max(0, min(round(timeout_seconds * 1000), 0xFFFFFFFE))
+    status = kernel32.WaitForSingleObject(handle, timeout_ms)
+    if status in (0x00000000, 0x00000080):  # WAIT_OBJECT_0 / WAIT_ABANDONED
+        return kernel32, handle
+    kernel32.CloseHandle(handle)
+    if status == 0x00000102:  # WAIT_TIMEOUT
+        raise CronJobsLockError("Timed out waiting for the cron jobs lock")
+    raise CronJobsLockError("Windows cron jobs mutex acquisition failed")
+
+
+def _release_windows_jobs_mutex(mutex) -> None:
+    kernel32, handle = mutex
+    try:
+        kernel32.ReleaseMutex(handle)
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 @contextlib.contextmanager
@@ -400,7 +401,7 @@ def _jobs_lock():
     """Serialize a load_jobs→modify→save_jobs critical section.
 
     Combines the in-process threading lock with a bounded, fail-closed
-    cross-process lock: ``flock`` on POSIX and ``msvcrt.locking`` on Windows.
+    cross-process lock: ``flock`` on POSIX and a kernel named mutex on Windows.
     If neither backend is available, no shared mutation is allowed.
 
     Nested calls in the same thread reuse the held lock so legacy callers that
@@ -419,42 +420,38 @@ def _jobs_lock():
     with _jobs_file_lock:
         _jobs_lock_state.load_stamp = None
         lock_fd = None
-        lock_file = None
+        windows_mutex = None
         acquired = False
         try:
             ensure_dirs()
-            if fcntl is None and msvcrt is None:
+            if fcntl is None and not _use_windows_jobs_mutex():
                 raise CronJobsLockError("secure cron jobs lock backend unavailable")
             lock_path = _jobs_lock_file()
             if fcntl is not None:
                 lock_fd = _open_jobs_lock_fd(lock_path)
             else:
-                lock_file = _open_windows_jobs_lock_file(lock_path)
-                lock_fd = lock_file.fileno()
-            deadline = time.monotonic() + _JOBS_LOCK_TIMEOUT_SECONDS
-            while True:
-                try:
-                    if fcntl is not None:
-                        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    else:
-                        assert lock_file is not None and msvcrt is not None
-                        lock_file.seek(0)
-                        getattr(msvcrt, "locking")(
-                            lock_fd, getattr(msvcrt, "LK_NBLCK"), 1
-                        )
-                    acquired = True
-                    break
-                except (OSError, IOError) as exc:
-                    if exc.errno not in (errno.EACCES, errno.EAGAIN):
-                        raise CronJobsLockError(
-                            "cron jobs lock acquisition failed"
-                        ) from exc
-                    if time.monotonic() >= deadline:
-                        raise CronJobsLockError(
-                            "Timed out waiting for the cron jobs lock"
-                        ) from None
-                    time.sleep(0.1)
+                windows_mutex = _acquire_windows_jobs_mutex(
+                    lock_path, _JOBS_LOCK_TIMEOUT_SECONDS
+                )
+                acquired = True
             if fcntl is not None:
+                assert lock_fd is not None
+                deadline = time.monotonic() + _JOBS_LOCK_TIMEOUT_SECONDS
+                while True:
+                    try:
+                        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        acquired = True
+                        break
+                    except (OSError, IOError) as exc:
+                        if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                            raise CronJobsLockError(
+                                "cron jobs lock acquisition failed"
+                            ) from exc
+                        if time.monotonic() >= deadline:
+                            raise CronJobsLockError(
+                                "Timed out waiting for the cron jobs lock"
+                            ) from None
+                        time.sleep(0.1)
                 _validate_jobs_lock_fd(lock_fd, lock_path)
             _jobs_lock_state.depth = 1
             try:
@@ -465,23 +462,17 @@ def _jobs_lock():
         finally:
             _jobs_lock_state.depth = 0
             _jobs_lock_state.load_stamp = None
-            if lock_fd is not None:
+            if windows_mutex is not None:
+                _release_windows_jobs_mutex(windows_mutex)
+            elif lock_fd is not None:
                 try:
-                    if acquired and fcntl is not None:
+                    if acquired:
+                        assert fcntl is not None
                         fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                    elif acquired and msvcrt is not None:
-                        assert lock_file is not None
-                        lock_file.seek(0)
-                        getattr(msvcrt, "locking")(
-                            lock_fd, getattr(msvcrt, "LK_UNLCK"), 1
-                        )
                 except (OSError, IOError):
                     pass
                 finally:
-                    if lock_file is not None:
-                        lock_file.close()
-                    else:
-                        os.close(lock_fd)
+                    os.close(lock_fd)
 
 
 @contextlib.contextmanager

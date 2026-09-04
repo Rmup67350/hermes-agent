@@ -37,8 +37,9 @@ HSCE, ni service Impact UGC/Instagram.
     DeepSeek/xAI.
 15. `702b988598` — fermeture de la revue fonctionnelle G7 : lane script externe
     explicite et haché, plus backend Windows `msvcrt` borné et fail-closed.
-16. Le commit courant ferme la revue AppSec Windows : rejet de tout attribut
-    reparse/junction avant et après ouverture, avec tests natifs `windows-latest`.
+16. Le commit courant ferme la revue AppSec Windows : mutex noyau nommé,
+    stable et borné, sans ouverture ni écriture d'un chemin de verrou filesystem,
+    avec tests natifs `windows-latest` de contention, release et junction.
 
 Les commits documentaires `4a9eac6177`, `90e8cc3ed6` et celui portant cette
 mise à jour du manifeste ne modifient pas le comportement de production.
