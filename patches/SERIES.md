@@ -32,9 +32,12 @@ HSCE, ni service Impact UGC/Instagram.
     `cmd_update`; le venv local reste byte-identique hors caches bytecode.
 13. `d155834880` — portabilité Windows des nouveaux garde-fous de staging et
     verrou cron fail-closed, avec mise à jour du test historique contradictoire.
+14. `7be644e4bf` — fermeture du delta de suite complète : trust MCP explicite
+    dans les fixtures, contrats de tests actualisés et fallbacks hors ligne
+    DeepSeek/xAI.
 
-Les commits documentaires `4a9eac6177` et `90e8cc3ed6` maintiennent ce
-manifeste sans modifier le comportement de production.
+Les commits documentaires `4a9eac6177`, `90e8cc3ed6` et celui portant cette
+mise à jour du manifeste ne modifient pas le comportement de production.
 
 ## Garanties externes
 
