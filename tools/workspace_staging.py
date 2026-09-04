@@ -28,6 +28,13 @@ class WorkspaceStagingError(RuntimeError):
     """Workspace staging or publication violated a safety invariant."""
 
 
+def _effective_uid() -> int:
+    getter = getattr(os, "geteuid", None)
+    if getter is None:
+        raise WorkspaceStagingError("workspace owner checks are unsupported")
+    return getter()
+
+
 @dataclass(frozen=True)
 class WorkspaceIdentity:
     path: str
@@ -61,7 +68,7 @@ def capture_identity(path: os.PathLike[str] | str) -> WorkspaceIdentity:
         metadata = os.fstat(descriptor)
     finally:
         os.close(descriptor)
-    if metadata.st_uid != os.geteuid():
+    if metadata.st_uid != _effective_uid():
         raise WorkspaceStagingError("workspace identity has a foreign owner")
     return WorkspaceIdentity(canonical, metadata.st_dev, metadata.st_ino, metadata.st_uid)
 
@@ -226,7 +233,7 @@ def _archive_fd(descriptor: int, *, exclude_root_names: frozenset[str]) -> Binar
                     raise WorkspaceStagingError("workspace total size limit exceeded")
                 info.size = size
                 os.lseek(file_fd, 0, os.SEEK_SET)
-                with os.fdopen(os.dup(file_fd), "rb") as source:
+                with os.fdopen(os.dup(file_fd), "rb") as source:  # windows-footgun: ok — binary mode
                     archive.addfile(info, source)
         output.seek(0)
         return output

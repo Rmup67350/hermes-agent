@@ -332,7 +332,13 @@ def _open_jobs_lock_fd(lock_path: Path) -> int:
         raise CronJobsLockError("cron jobs lock could not be created securely") from exc
     try:
         expected_uid, expected_gid = _expected_jobs_lock_owner(lock_path)
-        if created and os.fstat(lock_fd).st_uid != expected_uid and os.geteuid() == 0:
+        geteuid = getattr(os, "geteuid", None)
+        if (
+            created
+            and os.fstat(lock_fd).st_uid != expected_uid
+            and geteuid is not None
+            and geteuid() == 0
+        ):
             os.fchown(lock_fd, expected_uid, expected_gid)
         _validate_jobs_lock_fd(lock_fd, lock_path)
         return lock_fd
