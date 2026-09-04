@@ -35,6 +35,8 @@ HSCE, ni service Impact UGC/Instagram.
 14. `7be644e4bf` — fermeture du delta de suite complète : trust MCP explicite
     dans les fixtures, contrats de tests actualisés et fallbacks hors ligne
     DeepSeek/xAI.
+15. `702b988598` — fermeture de la revue fonctionnelle G7 : lane script externe
+    explicite et haché, plus backend Windows `msvcrt` borné et fail-closed.
 
 Les commits documentaires `4a9eac6177`, `90e8cc3ed6` et celui portant cette
 mise à jour du manifeste ne modifient pas le comportement de production.
