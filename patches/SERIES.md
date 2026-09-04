@@ -28,6 +28,11 @@ HSCE, ni service Impact UGC/Instagram.
     sauvegardes live.
 11. `c3c4a54fef` — forkguard minimal hors zone amont, limité aux invariants
     encore conservés dans le core.
+12. `28fa88cce9` — fermeture des mutations de dépendances dans les tests
+    `cmd_update`; le venv local reste byte-identique hors caches bytecode.
+
+Le commit documentaire `4a9eac6177` introduit ce manifeste sans modifier le
+comportement de production.
 
 ## Garanties externes
 
