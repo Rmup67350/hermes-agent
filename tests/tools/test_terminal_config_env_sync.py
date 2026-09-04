@@ -329,6 +329,7 @@ def test_docker_forward_env_is_bridged_everywhere():
 
 def _workspace_bootstrap_spec() -> dict[str, str]:
     return {
+        "lane_script": "/trusted/factory_lane.py",
         "registry": "/registry",
         "policy": "/policy.json",
         "profile": "code-a",

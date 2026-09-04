@@ -15,15 +15,13 @@ from typing import Any
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_REQUIRED = frozenset({"registry", "policy", "profile", "agent", "key", "lane_sha256"})
+_REQUIRED = frozenset(
+    {"lane_script", "registry", "policy", "profile", "agent", "key", "lane_sha256"}
+)
 
 
 class WorkspaceBootstrapError(RuntimeError):
     """A workspace-only environment cannot be safely bootstrapped."""
-
-
-def _lane_script() -> Path:
-    return Path(__file__).resolve().parents[1] / "scripts" / "factory_lane.py"
 
 
 def validate_workspace_bootstrap_spec(
@@ -37,6 +35,8 @@ def validate_workspace_bootstrap_spec(
         raise WorkspaceBootstrapError("workspace_bootstrap fields must be non-empty strings")
     if not _SHA256_RE.fullmatch(value["lane_sha256"]):
         raise WorkspaceBootstrapError("workspace_bootstrap lane_sha256 must be a SHA-256 digest")
+    if not os.path.isabs(value["lane_script"]):
+        raise WorkspaceBootstrapError("workspace_bootstrap lane_script must be absolute")
     return dict(value)
 
 
@@ -73,16 +73,24 @@ def revalidate_workspace_identity(config: dict[str, Any]) -> None:
         raise WorkspaceBootstrapError("dynamic workspace binding identity changed")
 
 
-def _verified_script(expected_hash: str) -> tuple[Path, bytes]:
+def _verified_script(configured_path: str, expected_hash: str) -> tuple[Path, bytes]:
     """Read and hash a regular, non-symlink lane script through one FD.
 
     The returned bytes, not the mutable pathname, are passed to the child Python
     process. This keeps the verified object and executed object identical even if
     another process replaces or rewrites the configured script after this call.
     """
-    script = _lane_script()
+    script = Path(configured_path)
     try:
-        fd = os.open(script, os.O_RDONLY | os.O_NOFOLLOW)
+        resolved = script.resolve(strict=True)
+    except OSError as exc:
+        raise WorkspaceBootstrapError("trusted factory lane script is unavailable") from exc
+    if script.is_symlink() or resolved != script:
+        raise WorkspaceBootstrapError(
+            "trusted factory lane script must be a canonical non-symlink path"
+        )
+    try:
+        fd = os.open(script, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise WorkspaceBootstrapError("trusted factory lane script must be a regular file")
@@ -132,7 +140,7 @@ def prepare_workspace_only_config(config: dict[str, Any], *, task_id: str) -> di
     if raw in (None, {}):
         return prepared
     spec = _spec(raw)
-    script, contents = _verified_script(spec["lane_sha256"])
+    script, contents = _verified_script(spec["lane_script"], spec["lane_sha256"])
     runner = (
         "import sys; "
         "__file__ = sys.argv[1]; "

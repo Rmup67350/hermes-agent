@@ -20,6 +20,7 @@ from tools.workspace_bootstrap import (
 
 def _bootstrap_spec(lane: Path) -> dict[str, str]:
     return {
+        "lane_script": str(lane),
         "registry": "/registry",
         "policy": "/policy.json",
         "profile": "code-a",
@@ -54,7 +55,6 @@ def test_bootstrap_injects_canonical_host_cwd_before_environment_creation(monkey
         assert argv[:3] == ["git", "-C", str(workspace)]
         return subprocess.CompletedProcess(argv, 0, str(workspace) + "\n", "")
 
-    monkeypatch.setattr("tools.workspace_bootstrap._lane_script", lambda: lane)
     monkeypatch.setattr("tools.workspace_bootstrap.subprocess.run", fake_run)
 
     prepared = prepare_workspace_only_config(_config(lane), task_id="session-1")
@@ -72,6 +72,25 @@ def test_bootstrap_injects_canonical_host_cwd_before_environment_creation(monkey
     ]
     assert calls[0][1]["input"] == b"trusted lane\n"
     assert calls[0][1]["shell"] is False
+
+
+def test_bootstrap_uses_explicit_external_lane_script(monkeypatch, tmp_path):
+    lane = tmp_path / "external_factory_lane.py"
+    lane.write_text("trusted lane\n")
+    workspace = tmp_path / "owned"
+    workspace.mkdir()
+
+    def fake_run(argv, **_kwargs):
+        if argv[:2] == [sys.executable, "-c"]:
+            assert argv[3] == str(lane)
+            return subprocess.CompletedProcess(
+                argv, 0, json.dumps({"worktree": str(workspace)}), ""
+            )
+        return subprocess.CompletedProcess(argv, 0, str(workspace) + "\n", "")
+
+    monkeypatch.setattr("tools.workspace_bootstrap.subprocess.run", fake_run)
+    prepared = prepare_workspace_only_config(_config(lane), task_id="session-1")
+    assert prepared["host_cwd"] == str(workspace)
 
 
 @pytest.mark.parametrize("returned_path", ["", "not-json", "symlink", "foreign"])
@@ -98,7 +117,6 @@ def test_bootstrap_refuses_untrusted_or_noncanonical_result(monkeypatch, tmp_pat
             return subprocess.CompletedProcess(argv, 0, "not json" if payload is None else json.dumps(payload), "")
         return subprocess.CompletedProcess(argv, 1, "", "not a worktree")
 
-    monkeypatch.setattr("tools.workspace_bootstrap._lane_script", lambda: lane)
     monkeypatch.setattr("tools.workspace_bootstrap.subprocess.run", fake_run)
 
     with pytest.raises(WorkspaceBootstrapError):
@@ -116,7 +134,6 @@ def test_bootstrap_runs_verified_source_with_script_style_argv(monkeypatch, tmp_
         f"print(json.dumps({{\"worktree\": {str(workspace)!r}}}))\n"
     )
 
-    monkeypatch.setattr("tools.workspace_bootstrap._lane_script", lambda: lane)
     monkeypatch.setattr("tools.workspace_bootstrap._canonical_worktree", lambda value: value)
 
     prepared = prepare_workspace_only_config(_config(lane), task_id="session-1")
@@ -136,7 +153,6 @@ def test_bootstrap_refuses_hash_drift_before_running_claim(monkeypatch, tmp_path
         called = True
         raise AssertionError("claim must not run")
 
-    monkeypatch.setattr("tools.workspace_bootstrap._lane_script", lambda: lane)
     monkeypatch.setattr("tools.workspace_bootstrap.subprocess.run", fake_run)
 
     with pytest.raises(WorkspaceBootstrapError, match="hash"):
@@ -160,7 +176,6 @@ def test_bootstrap_executes_verified_bytes_when_lane_path_is_replaced(monkeypatc
             return subprocess.CompletedProcess(argv, 0, json.dumps({"worktree": str(workspace)}), "")
         return subprocess.CompletedProcess(argv, 0, str(workspace) + "\n", "")
 
-    monkeypatch.setattr("tools.workspace_bootstrap._lane_script", lambda: lane)
     monkeypatch.setattr("tools.workspace_bootstrap.subprocess.run", fake_run)
 
     prepare_workspace_only_config(_config(lane), task_id="session-1")

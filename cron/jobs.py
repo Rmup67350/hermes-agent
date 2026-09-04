@@ -347,21 +347,41 @@ def _open_jobs_lock_fd(lock_path: Path) -> int:
         raise
 
 
+def _open_windows_jobs_lock_file(lock_path: Path):
+    """Open a Windows lock file while rejecting symlink/reparse ambiguity."""
+    absolute = lock_path.absolute()
+    cumulative = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        cumulative = cumulative / part
+        if cumulative.is_symlink():
+            raise CronJobsLockError("cron jobs lock path contains a symlink")
+    handle = None
+    try:
+        handle = open(lock_path, "a+b")
+        if os.fstat(handle.fileno()).st_size == 0:
+            handle.write(b"\0")
+            handle.flush()
+            os.fsync(handle.fileno())
+        fd_stat = os.fstat(handle.fileno())
+        path_stat = os.stat(lock_path, follow_symlinks=False)
+        if not stat.S_ISREG(fd_stat.st_mode) or fd_stat.st_nlink != 1:
+            raise CronJobsLockError("cron jobs lock is not a regular single-link file")
+        if (fd_stat.st_dev, fd_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino):
+            raise CronJobsLockError("cron jobs lock path changed during acquisition")
+        return handle
+    except BaseException:
+        if handle is not None:
+            handle.close()
+        raise
+
+
 @contextlib.contextmanager
 def _jobs_lock():
     """Serialize a load_jobs→modify→save_jobs critical section.
 
-    Combines the in-process threading lock (cheap mutual exclusion between
-    the gateway's parallel tick threads) with a cross-process advisory file
-    lock on ``<cron dir>/.jobs.lock`` (mutual exclusion between the gateway process
-    and standalone ``hermes`` CLI invocations, which previously shared no lock
-    at all — a `cron pause` could be silently clobbered by a concurrent
-    gateway write, leaving a "paused" job still firing).
-
-    The flock is blocking, but every critical section that uses it is short
-    (field updates only — no agent execution), so contention resolves in
-    milliseconds. If neither fcntl nor msvcrt is available the manager still
-    provides in-process locking, matching the historical behaviour.
+    Combines the in-process threading lock with a bounded, fail-closed
+    cross-process lock: ``flock`` on POSIX and ``msvcrt.locking`` on Windows.
+    If neither backend is available, no shared mutation is allowed.
 
     Nested calls in the same thread reuse the held lock so legacy callers that
     invoke save_jobs() inside a broader mutation section don't deadlock or try
@@ -377,24 +397,31 @@ def _jobs_lock():
         return
 
     with _jobs_file_lock:
-        # Stamp of jobs.json as of this section's load_jobs() (#80703's
-        # fast-path, credit @JoaoMarcos44): lets _save_jobs_unlocked skip the
-        # shrink-merge parse when the file provably hasn't changed since this
-        # section read it. Reset on entry/exit so stale stamps from unlocked
-        # loads or prior sections can never suppress a needed merge.
         _jobs_lock_state.load_stamp = None
         lock_fd = None
+        lock_file = None
         acquired = False
         try:
             ensure_dirs()
-            if fcntl is None:
+            if fcntl is None and msvcrt is None:
                 raise CronJobsLockError("secure cron jobs lock backend unavailable")
             lock_path = _jobs_lock_file()
-            lock_fd = _open_jobs_lock_fd(lock_path)
+            if fcntl is not None:
+                lock_fd = _open_jobs_lock_fd(lock_path)
+            else:
+                lock_file = _open_windows_jobs_lock_file(lock_path)
+                lock_fd = lock_file.fileno()
             deadline = time.monotonic() + _JOBS_LOCK_TIMEOUT_SECONDS
             while True:
                 try:
-                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    if fcntl is not None:
+                        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    else:
+                        assert lock_file is not None and msvcrt is not None
+                        lock_file.seek(0)
+                        getattr(msvcrt, "locking")(
+                            lock_fd, getattr(msvcrt, "LK_NBLCK"), 1
+                        )
                     acquired = True
                     break
                 except (OSError, IOError) as exc:
@@ -407,7 +434,8 @@ def _jobs_lock():
                             "Timed out waiting for the cron jobs lock"
                         ) from None
                     time.sleep(0.1)
-            _validate_jobs_lock_fd(lock_fd, lock_path)
+            if fcntl is not None:
+                _validate_jobs_lock_fd(lock_fd, lock_path)
             _jobs_lock_state.depth = 1
             try:
                 yield
@@ -421,10 +449,19 @@ def _jobs_lock():
                 try:
                     if acquired and fcntl is not None:
                         fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    elif acquired and msvcrt is not None:
+                        assert lock_file is not None
+                        lock_file.seek(0)
+                        getattr(msvcrt, "locking")(
+                            lock_fd, getattr(msvcrt, "LK_UNLCK"), 1
+                        )
                 except (OSError, IOError):
                     pass
                 finally:
-                    os.close(lock_fd)
+                    if lock_file is not None:
+                        lock_file.close()
+                    else:
+                        os.close(lock_fd)
 
 
 @contextlib.contextmanager

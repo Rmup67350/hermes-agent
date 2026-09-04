@@ -19,6 +19,7 @@ import json
 import os
 import threading
 import time
+from types import SimpleNamespace
 from datetime import timedelta
 from pathlib import Path
 
@@ -65,6 +66,25 @@ def _hold_jobs_flock(path: Path, release: threading.Event, held: threading.Event
 
 
 class TestBoundedJobsLock:
+    def test_msvcrt_backend_enters_and_releases_when_fcntl_is_unavailable(
+        self, monkeypatch
+    ):
+        jobs_mod.ensure_dirs()
+        calls = []
+
+        def locking(fd, mode, length):
+            calls.append((fd, mode, length))
+
+        fake_msvcrt = SimpleNamespace(LK_NBLCK=1, LK_UNLCK=2, locking=locking)
+        monkeypatch.setattr(jobs_mod, "fcntl", None)
+        monkeypatch.setattr(jobs_mod, "msvcrt", fake_msvcrt)
+
+        with _jobs_lock():
+            pass
+
+        assert [mode for _fd, mode, _length in calls] == [1, 2]
+        assert all(length == 1 for _fd, _mode, length in calls)
+
     def test_lock_acquisition_times_out_and_fails_closed(self, monkeypatch):
         """A foreign holder must neither block forever nor permit an unsafe write."""
         jobs_mod.ensure_dirs()

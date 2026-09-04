@@ -152,6 +152,7 @@ class TestConfigYamlRouting:
         import json
 
         spec = {
+            "lane_script": "/trusted/factory_lane.py",
             "registry": "/registry",
             "policy": "/policy.json",
             "profile": "code-a",
@@ -183,6 +184,7 @@ class TestConfigYamlRouting:
         from tools.workspace_bootstrap import WorkspaceBootstrapError
 
         invalid = {
+            "lane_script": "/trusted/factory_lane.py",
             "registry": "/registry",
             "policy": "/policy.json",
             "profile": "code-a",
