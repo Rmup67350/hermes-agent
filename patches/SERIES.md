@@ -30,9 +30,11 @@ HSCE, ni service Impact UGC/Instagram.
     encore conservés dans le core.
 12. `28fa88cce9` — fermeture des mutations de dépendances dans les tests
     `cmd_update`; le venv local reste byte-identique hors caches bytecode.
+13. `d155834880` — portabilité Windows des nouveaux garde-fous de staging et
+    verrou cron fail-closed, avec mise à jour du test historique contradictoire.
 
-Le commit documentaire `4a9eac6177` introduit ce manifeste sans modifier le
-comportement de production.
+Les commits documentaires `4a9eac6177` et `90e8cc3ed6` maintiennent ce
+manifeste sans modifier le comportement de production.
 
 ## Garanties externes
 
